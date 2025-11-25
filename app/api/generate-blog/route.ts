@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
-import { chromium } from 'playwright'
 import OpenAI from 'openai'
 import { StrategyFactory } from '@/lib/strategies/StrategyFactory'
+import mcpManager from '@/lib/browser/instance'
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
@@ -16,16 +16,25 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'URL is required' }, { status: 400 })
         }
 
-        // Step 1: Scrape with Playwright
-        const browser = await chromium.launch()
-        const page = await browser.newPage()
-        await page.goto(url)
-        // Wait for some content to load, maybe the body
-        await page.waitForSelector('body')
+        // Step 1: Scrape with MCPManagerPW
+        // Ensure browser is started
+        await mcpManager.startMCPProcess();
 
-        // Extract text content - simplified for now, getting body text
-        const content = await page.evaluate(() => document.body.innerText)
-        await browser.close()
+        // Navigate to URL
+        await mcpManager.navigate({ url, isNew: true });
+
+        // Get content
+        const contentResult = await mcpManager.getContent({ selector: 'body' });
+        const content = contentResult.success && contentResult.elements.length > 0
+            ? contentResult.elements[0].text
+            : '';
+
+        // Close tab after scraping
+        await mcpManager.closeCurrentTab();
+
+        if (!content) {
+            return NextResponse.json({ error: 'Failed to extract content' }, { status: 500 })
+        }
 
         // Step 2: Extract main content with LLM
         const extractionResponse = await openai.chat.completions.create({
