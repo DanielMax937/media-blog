@@ -16,21 +16,26 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'URL is required' }, { status: 400 })
         }
 
-        // Step 1: Scrape with MCPManagerPW
-        // Ensure browser is started
-        await mcpManager.startMCPProcess();
+        let content = '';
 
-        // Navigate to URL
-        await mcpManager.navigate({ url, isNew: true });
+        try {
+            // Step 1: Scrape with MCPManagerPW
+            // Ensure browser is started
+            await mcpManager.startMCPProcess();
 
-        // Get content
-        const contentResult = await mcpManager.getContent({ selector: 'body' });
-        const content = contentResult.success && contentResult.elements.length > 0
-            ? contentResult.elements[0].text
-            : '';
+            // Navigate to URL
+            await mcpManager.navigate({ url, isNew: true });
 
-        // Close tab after scraping
-        await mcpManager.closeCurrentTab();
+            // Get content
+            const contentResult = await mcpManager.getContent({ selector: 'body' });
+            content = contentResult.success && contentResult.elements.length > 0
+                ? contentResult.elements[0].text
+                : '';
+        } finally {
+            // Always close the browser after scraping, even if an error occurred
+            await mcpManager.closeMCPProcess();
+            console.log('✅ Browser closed after content extraction');
+        }
 
         if (!content) {
             return NextResponse.json({ error: 'Failed to extract content' }, { status: 500 })

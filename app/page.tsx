@@ -12,6 +12,22 @@ export default function BlogGenerator() {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
+        
+        // Validate URL is not empty
+        const trimmedUrl = url.trim()
+        if (!trimmedUrl) {
+            setError('URL is required. Please enter a valid article URL.')
+            return
+        }
+
+        // Validate URL format
+        try {
+            new URL(trimmedUrl)
+        } catch {
+            setError('Please enter a valid URL (e.g., https://example.com/article)')
+            return
+        }
+
         setLoading(true)
         setError('')
         setResult('')
@@ -23,11 +39,12 @@ export default function BlogGenerator() {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ url, type }),
+                body: JSON.stringify({ url: trimmedUrl, type }),
             })
 
             if (!response.ok) {
-                throw new Error('Failed to generate blog')
+                const errorData = await response.json().catch(() => ({}))
+                throw new Error(errorData.error || 'Failed to generate blog')
             }
 
             const data = await response.json()
@@ -48,17 +65,29 @@ export default function BlogGenerator() {
             <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
                     <label htmlFor="url" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                        Article URL
+                        Article URL <span className="text-red-500">*</span>
                     </label>
                     <input
                         type="url"
                         id="url"
                         value={url}
-                        onChange={(e) => setUrl(e.target.value)}
+                        onChange={(e) => {
+                            setUrl(e.target.value)
+                            if (error) setError('') // Clear error when user starts typing
+                        }}
                         required
-                        className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-700 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                        className={`mt-1 block w-full rounded-md shadow-sm sm:text-sm p-2 border bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 ${
+                            error && !url.trim() 
+                                ? 'border-red-500 focus:border-red-500 focus:ring-red-500' 
+                                : 'border-gray-300 dark:border-gray-700 focus:border-indigo-500 focus:ring-indigo-500'
+                        }`}
                         placeholder="https://example.com/article"
                     />
+                    {error && !url.trim() && (
+                        <p className="mt-1 text-sm text-red-600 dark:text-red-400">
+                            {error}
+                        </p>
+                    )}
                 </div>
                 <div>
                     <label htmlFor="type" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -76,16 +105,16 @@ export default function BlogGenerator() {
                 </div>
                 <button
                     type="submit"
-                    disabled={loading}
-                    className="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+                    disabled={loading || !url.trim()}
+                    className="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     {loading ? 'Generating...' : 'Generate Blog'}
                 </button>
             </form>
 
-            {error && (
-                <div className="mt-4 p-4 bg-red-50 text-red-700 rounded-md">
-                    {error}
+            {error && url.trim() && (
+                <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 rounded-md border border-red-200 dark:border-red-800">
+                    <strong>Error:</strong> {error}
                 </div>
             )}
 

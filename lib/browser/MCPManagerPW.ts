@@ -82,7 +82,7 @@ export class MCPManagerPW {
 
             const launchOptions: any = {
                 channel: "chrome",
-                headless: true,
+                headless: false,
                 viewport: null,
             };
 
@@ -346,7 +346,7 @@ export class MCPManagerPW {
                 return { success: true, tabId };
             }
             console.log(`📂 从 ${cleanCurrentUrl} 导航到 ${url}`);
-            await targetPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await targetPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 300000 });
             await this.sleep(1000);
             console.log(`✅ 导航完成: ${targetPage.url()}`);
             return { success: true, tabId };
