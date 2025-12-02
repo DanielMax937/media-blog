@@ -19,18 +19,18 @@ export async function POST(request: Request) {
         let content = '';
 
         try {
-            // Step 1: Scrape with MCPManagerPW
-            // Ensure browser is started
-            await mcpManager.startMCPProcess();
+        // Step 1: Scrape with MCPManagerPW
+        // Ensure browser is started
+        await mcpManager.startMCPProcess();
 
-            // Navigate to URL
-            await mcpManager.navigate({ url, isNew: true });
+        // Navigate to URL
+        await mcpManager.navigate({ url, isNew: true });
 
-            // Get content
-            const contentResult = await mcpManager.getContent({ selector: 'body' });
+        // Get content
+        const contentResult = await mcpManager.getContent({ selector: 'body' });
             content = contentResult.success && contentResult.elements.length > 0
-                ? contentResult.elements[0].text
-                : '';
+            ? contentResult.elements[0].text
+            : '';
         } finally {
             // Always close the browser after scraping, even if an error occurred
             await mcpManager.closeMCPProcess();
