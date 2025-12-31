@@ -1,5 +1,6 @@
 import { BlogStrategy } from './BlogStrategy';
 import OpenAI from 'openai';
+import { query, Options } from '@anthropic-ai/claude-agent-sdk';
 import fs from 'fs';
 import path from 'path';
 
@@ -8,6 +9,90 @@ export class MediumStrategy implements BlogStrategy {
 
     constructor(openai: OpenAI) {
         this.openai = openai;
+    }
+
+    /**
+     * Generate demo HTML using Claude Agent SDK
+     * The agent can autonomously create and write the demo file
+     */
+    private async generateDemoWithAgent(englishContent: string): Promise<string> {
+        const demosDir = path.join(process.cwd(), 'public', 'demos');
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `demo-${timestamp}.html`;
+        const filepath = path.join(demosDir, filename);
+
+        const options: Options = {
+            allowedTools: ['Write', 'Bash'],
+            systemPrompt: `You are a frontend developer creating an educational demo page. Create a self-contained HTML file that demonstrates concepts from the article in a "code snippet → live showcase" format.
+
+STRUCTURE REQUIREMENTS:
+- Organize the page as a series of sections, each containing:
+  1. A heading describing the concept
+  2. The code snippet shown in a <pre><code> block with syntax highlighting
+  3. Immediately followed by a live interactive showcase demonstrating that exact code
+- Use clear visual separation between sections (borders, backgrounds, spacing)
+- Each showcase should be directly tied to the code snippet above it
+
+VISUAL DESIGN:
+- Use a clean, modern design with good typography
+- Code blocks should have syntax highlighting (dark background, colored syntax)
+- Showcases should have a distinct visual container (e.g., dashed border, light background)
+- Add "Code:" and "Result:" labels to clearly distinguish sections
+
+TECHNICAL REQUIREMENTS:
+- Self-contained HTML with embedded CSS and JavaScript
+- Use modern CSS (flexbox, grid, CSS variables)
+- Make showcases interactive where possible (hover effects, click handlers, animations)
+- Ensure code in <pre> blocks matches the actual implementation in showcases
+
+You MUST use the Write tool to save the HTML file to: ${filepath}
+After writing, output the complete HTML content.`,
+        };
+
+        const prompt = `Create a demo for this article and save it to ${filepath}:\n\n${englishContent}`;
+
+        let demoContent = '';
+
+        console.log('🤖 Claude Agent generating demo...');
+
+        for await (const message of query({ prompt, options })) {
+            if (message.type === 'assistant') {
+                // Extract text content from assistant message
+                for (const block of message.message.content) {
+                    if (block.type === 'text') {
+                        demoContent += block.text;
+                    }
+                }
+            } else if (message.type === 'result') {
+                if (message.subtype === 'success') {
+                    console.log('📝 Agent completed:', message.result);
+                }
+            }
+        }
+
+        // If agent wrote the file, read it back; otherwise parse from response
+        if (fs.existsSync(filepath)) {
+            console.log('✅ Demo saved by agent to:', filepath);
+            console.log('   Accessible at: /demos/' + filename);
+            return fs.readFileSync(filepath, 'utf-8');
+        }
+
+        // Fallback: extract HTML from agent's text response
+        let demo = demoContent;
+        demo = demo.replace(/^```html\n?/g, '').replace(/\n?```$/g, '').trim();
+
+        // Ensure demos directory exists
+        if (!fs.existsSync(demosDir)) {
+            fs.mkdirSync(demosDir, { recursive: true });
+        }
+
+        // Write the file manually if agent didn't
+        if (demo) {
+            fs.writeFileSync(filepath, demo, 'utf-8');
+            console.log('✅ Demo saved to:', filepath);
+        }
+
+        return demo;
     }
 
     async generate(content: string): Promise<{ content: string; demo?: string }> {
@@ -47,47 +132,8 @@ export class MediumStrategy implements BlogStrategy {
         let demoCodeExamples = '';
         
         if (isTechnical) {
-            // 3. Generate Demo FIRST for technical content
-            const demoResponse = await this.openai.chat.completions.create({
-                model: 'gpt-4o',
-                messages: [
-                    {
-                        role: 'system',
-                        content: 'You are a frontend developer. Create a simple, self-contained HTML file (with embedded CSS and JS) that demonstrates the concepts discussed in the article. The code should be ready to run in a browser. Make sure the code is well-structured and easy to understand.',
-                    },
-                    {
-                        role: 'user',
-                        content: `Create a demo for this article:\n\n${englishContent}`,
-                    },
-                ],
-            });
-            demo = demoResponse.choices[0].message.content || '';
-            // Clean up markdown code blocks if present
-            demo = demo.replace(/^```html\n?/g, '').replace(/\n?```$/g, '').trim();
-
-            // Save demo to local file
-            try {
-                const demosDir = path.join(process.cwd(), 'public', 'demos');
-                
-                // Create demos directory if it doesn't exist
-                if (!fs.existsSync(demosDir)) {
-                    fs.mkdirSync(demosDir, { recursive: true });
-                    console.log('✅ Created demos directory:', demosDir);
-                }
-
-                // Generate unique filename with timestamp
-                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                const filename = `demo-${timestamp}.html`;
-                const filepath = path.join(demosDir, filename);
-
-                // Write demo to file
-                fs.writeFileSync(filepath, demo, 'utf-8');
-                console.log('✅ Demo saved to:', filepath);
-                console.log('   Accessible at: /demos/' + filename);
-            } catch (error: any) {
-                console.error('❌ Failed to save demo file:', error.message);
-                // Continue even if file saving fails
-            }
+            // 3. Generate Demo FIRST for technical content using Claude Agent SDK
+            demo = await this.generateDemoWithAgent(englishContent);
 
             // 4. Extract code examples from the demo
             demoCodeExamples = `\n\nHere is the working demo code that was generated:\n\`\`\`html\n${demo}\n\`\`\`\n\nUse relevant snippets from this code to create practical code examples in the article.`;
