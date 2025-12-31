@@ -12,10 +12,111 @@ export class MediumStrategy implements BlogStrategy {
     }
 
     /**
+     * Update index.html to include a new demo file link with title
+     */
+    private updateIndexHtml(demosDir: string, newFilename: string, title: string): void {
+        const indexPath = path.join(demosDir, 'index.html');
+
+        if (!fs.existsSync(indexPath)) {
+            console.log('Warning: index.html not found, skipping update');
+            return;
+        }
+
+        let indexContent = fs.readFileSync(indexPath, 'utf-8');
+
+        // Find the demos array in the JavaScript
+        const demosArrayMatch = indexContent.match(/const demos = \[([\s\S]*?)\];/);
+        if (!demosArrayMatch) {
+            console.log('Warning: Could not find demos array in index.html');
+            return;
+        }
+
+        // Check if the file is already in the list
+        if (indexContent.includes(newFilename)) {
+            console.log('Info: Demo already in index.html');
+            return;
+        }
+
+        // Escape title for JSON (handle quotes and special chars)
+        const escapedTitle = title.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
+        // Add new entry object to the beginning of the array
+        const newEntry = `\n            { filename: '${newFilename}', title: '${escapedTitle}' },`;
+        const updatedContent = indexContent.replace(
+            /const demos = \[/,
+            `const demos = [${newEntry}`
+        );
+
+        fs.writeFileSync(indexPath, updatedContent, 'utf-8');
+        console.log('Updated index.html with new demo:', title);
+    }
+
+    /**
+     * Upload files to remote server via SFTP
+     */
+    private async uploadViaScp(localPath: string, remotePath: string): Promise<void> {
+        const host = process.env.SCP_HOST;
+        const port = parseInt(process.env.SCP_PORT || '22', 10);
+        const username = process.env.SCP_USERNAME;
+        const password = process.env.SCP_PASSWORD;
+        const remoteBasePath = process.env.SCP_REMOTE_PATH || '/data/';
+
+        if (!host || !username || !password) {
+            console.log('Warning: SCP credentials not configured in .env, skipping upload');
+            return;
+        }
+
+        const fullRemotePath = `${remoteBasePath}${remotePath}`;
+
+        // Dynamic import to avoid Turbopack build issues
+        const SftpClient = (await import('ssh2-sftp-client')).default;
+        const sftp = new SftpClient();
+
+        try {
+            await sftp.connect({
+                host,
+                port,
+                username,
+                password
+            });
+
+            await sftp.put(localPath, fullRemotePath);
+            console.log(`Uploaded ${path.basename(localPath)} to ${host}:${fullRemotePath}`);
+        } catch (error) {
+            const err = error as Error;
+            console.error('SFTP upload failed:', err.message);
+            throw error;
+        } finally {
+            await sftp.end();
+        }
+    }
+
+    /**
+     * Upload demo files to remote server
+     */
+    private async uploadDemoFiles(demosDir: string, demoFilename: string): Promise<void> {
+        try {
+            // Upload the new demo HTML
+            const demoPath = path.join(demosDir, demoFilename);
+            await this.uploadViaScp(demoPath, demoFilename);
+
+            // Upload the updated index.html
+            const indexPath = path.join(demosDir, 'index.html');
+            if (fs.existsSync(indexPath)) {
+                await this.uploadViaScp(indexPath, 'index.html');
+            }
+        } catch (error) {
+            console.error('Failed to upload demo files:', error);
+            // Don't throw - upload failure shouldn't break the generation flow
+        }
+    }
+
+    /**
      * Generate demo HTML using Claude Agent SDK
      * The agent can autonomously create and write the demo file
+     * Returns both the demo content and the filename
      */
-    private async generateDemoWithAgent(englishContent: string): Promise<string> {
+    private async generateDemoWithAgent(englishContent: string): Promise<{ content: string; filename: string }> {
         const demosDir = path.join(process.cwd(), 'public', 'demos');
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const filename = `demo-${timestamp}.html`;
@@ -72,9 +173,10 @@ After writing, output the complete HTML content.`,
 
         // If agent wrote the file, read it back; otherwise parse from response
         if (fs.existsSync(filepath)) {
-            console.log('✅ Demo saved by agent to:', filepath);
+            console.log('Demo saved by agent to:', filepath);
             console.log('   Accessible at: /demos/' + filename);
-            return fs.readFileSync(filepath, 'utf-8');
+
+            return { content: fs.readFileSync(filepath, 'utf-8'), filename };
         }
 
         // Fallback: extract HTML from agent's text response
@@ -89,10 +191,10 @@ After writing, output the complete HTML content.`,
         // Write the file manually if agent didn't
         if (demo) {
             fs.writeFileSync(filepath, demo, 'utf-8');
-            console.log('✅ Demo saved to:', filepath);
+            console.log('Demo saved to:', filepath);
         }
 
-        return demo;
+        return { content: demo, filename };
     }
 
     async generate(content: string): Promise<{ content: string; demo?: string }> {
@@ -129,11 +231,14 @@ After writing, output the complete HTML content.`,
         const isTechnical = detectResponse.choices[0].message.content?.trim().toUpperCase().includes('YES');
 
         let demo = undefined;
+        let demoFilename = '';
         let demoCodeExamples = '';
-        
+
         if (isTechnical) {
             // 3. Generate Demo FIRST for technical content using Claude Agent SDK
-            demo = await this.generateDemoWithAgent(englishContent);
+            const demoResult = await this.generateDemoWithAgent(englishContent);
+            demo = demoResult.content;
+            demoFilename = demoResult.filename;
 
             // 4. Extract code examples from the demo
             demoCodeExamples = `\n\nHere is the working demo code that was generated:\n\`\`\`html\n${demo}\n\`\`\`\n\nUse relevant snippets from this code to create practical code examples in the article.`;
@@ -173,7 +278,36 @@ Example demo screenshot: ![Screenshot showing the interactive button with hover 
                 },
             ],
         });
-        const mediumContent = formatResponse.choices[0].message.content || '';
+        let mediumContent = formatResponse.choices[0].message.content || '';
+
+        // 6. Update index.html and upload if a demo was generated
+        if (demo && demoFilename) {
+            // Extract title from the formatted blog (first # heading)
+            const titleMatch = mediumContent.match(/^#\s+(.+)$/m);
+            const blogTitle = titleMatch ? titleMatch[1].trim() : 'Untitled Demo';
+
+            // Update index.html with title and upload files
+            const demosDir = path.join(process.cwd(), 'public', 'demos');
+            this.updateIndexHtml(demosDir, demoFilename, blogTitle);
+            await this.uploadDemoFiles(demosDir, demoFilename);
+
+            // 7. Add demo footer
+            const demoFooter = `
+
+---
+
+### Try It Yourself
+
+Want to see these concepts in action? I've created an **interactive demo** where you can experiment with the code and see real-time results.
+
+**[View the Live Demo](https://www.bitstripe.cn/files/${demoFilename})**
+
+Explore more demos from my previous articles in the **[Demo Gallery](https://www.bitstripe.cn/files/index.html)**.
+
+*Happy coding!*`;
+
+            mediumContent += demoFooter;
+        }
 
         return { content: mediumContent, demo };
     }
