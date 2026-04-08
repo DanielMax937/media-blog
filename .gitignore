@@ -24,6 +24,10 @@
 .DS_Store
 *.pem
 
+# local-service background run
+blog2media.log
+blog2media.pid
+
 # debug
 npm-debug.log*
 yarn-debug.log*
