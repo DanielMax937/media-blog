@@ -54,6 +54,20 @@ function getDb(): Database.Database {
         )
     `);
 
+    _db.exec(`
+        CREATE TABLE IF NOT EXISTS medium_job (
+            job_id              TEXT PRIMARY KEY,
+            source_url          TEXT    NOT NULL,
+            status              TEXT    NOT NULL,
+            error               TEXT,
+            md_url              TEXT,
+            image_urls          TEXT,
+            generation_log_id   INTEGER,
+            created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+            updated_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+        )
+    `);
+
     return _db;
 }
 
@@ -212,4 +226,64 @@ export function claimNextQueuedRednoteJob(): { jobId: string; sourceUrl: string 
         if (r.changes !== 1) return null;
         return { jobId: row.job_id, sourceUrl: row.source_url };
     })();
+}
+
+// ---------------------------------------------------------------------------
+// Async Medium jobs
+// ---------------------------------------------------------------------------
+
+export type MediumJobStatus = 'queued' | 'processing' | 'completed' | 'failed';
+
+export interface MediumJobRecord {
+    job_id: string;
+    source_url: string;
+    status: MediumJobStatus;
+    error: string | null;
+    md_url: string | null;
+    /** JSON array string; null until completed */
+    image_urls: string | null;
+    generation_log_id: number | null;
+    created_at: string;
+    updated_at: string;
+}
+
+/** Create a queued Medium job and return its opaque id (use with GET /api/medium/[jobId]). */
+export function createMediumJob(sourceUrl: string): string {
+    const db = getDb();
+    const jobId = randomUUID();
+    db.prepare(
+        `INSERT INTO medium_job (job_id, source_url, status) VALUES (?, ?, 'queued')`
+    ).run(jobId, sourceUrl);
+    return jobId;
+}
+
+export type MediumJobPatch = {
+    status?: MediumJobStatus;
+    error?: string | null;
+    md_url?: string | null;
+    image_urls?: string | null;
+    generation_log_id?: number | null;
+};
+
+export function updateMediumJob(jobId: string, patch: MediumJobPatch): void {
+    const db = getDb();
+    const cols: string[] = ["updated_at = datetime('now')"];
+    const values: (string | number | null)[] = [];
+
+    if (patch.status !== undefined) { cols.push('status = ?'); values.push(patch.status); }
+    if (patch.error !== undefined) { cols.push('error = ?'); values.push(patch.error); }
+    if (patch.md_url !== undefined) { cols.push('md_url = ?'); values.push(patch.md_url); }
+    if (patch.image_urls !== undefined) { cols.push('image_urls = ?'); values.push(patch.image_urls); }
+    if (patch.generation_log_id !== undefined) { cols.push('generation_log_id = ?'); values.push(patch.generation_log_id); }
+
+    values.push(jobId);
+    db.prepare(`UPDATE medium_job SET ${cols.join(', ')} WHERE job_id = ?`).run(...values);
+}
+
+export function getMediumJob(jobId: string): MediumJobRecord | null {
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM medium_job WHERE job_id = ?').get(jobId) as
+        | MediumJobRecord
+        | undefined;
+    return row ?? null;
 }
