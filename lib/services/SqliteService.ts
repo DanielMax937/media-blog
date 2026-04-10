@@ -97,6 +97,15 @@ export function getLogsBySourceUrl(sourceUrl: string): GenerationLog[] {
         .all(sourceUrl) as GenerationLog[];
 }
 
+/** True if `generation_log` already has at least one row for this source URL (processed Rednote output). */
+export function hasGenerationLogForSourceUrl(sourceUrl: string): boolean {
+    const db = getDb();
+    const row = db
+        .prepare('SELECT 1 AS ok FROM generation_log WHERE source_url = ? LIMIT 1')
+        .get(sourceUrl) as { ok: number } | undefined;
+    return row != null;
+}
+
 /** Close the DB connection (useful in tests). */
 export function closeDb(): void {
     if (_db) {

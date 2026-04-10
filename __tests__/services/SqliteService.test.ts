@@ -35,6 +35,7 @@ import {
     logGeneration,
     getAllLogs,
     getLogsBySourceUrl,
+    hasGenerationLogForSourceUrl,
     closeDb,
     createRednoteJob,
     updateRednoteJob,
@@ -103,6 +104,17 @@ describe('SqliteService', () => {
         it('returns empty array when no matching rows', () => {
             const logs = getLogsBySourceUrl('https://nowhere.example');
             expect(logs).toEqual([]);
+        });
+    });
+
+    describe('hasGenerationLogForSourceUrl', () => {
+        it('returns false when no log exists for URL', () => {
+            expect(hasGenerationLogForSourceUrl('https://missing.example/t/1')).toBe(false);
+        });
+
+        it('returns true after logGeneration for that source_url', () => {
+            logGeneration('https://seen.example/t/2', 'https://bitstripe.cn/files/x.md', []);
+            expect(hasGenerationLogForSourceUrl('https://seen.example/t/2')).toBe(true);
         });
     });
 
