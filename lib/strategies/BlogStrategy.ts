@@ -1,3 +1,3 @@
 export interface BlogStrategy {
-    generate(content: string): Promise<{ content: string; demo?: string }>;
+    generate(content: string): Promise<{ content: string; demo?: string; imageUrls?: string[] }>;
 }

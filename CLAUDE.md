@@ -20,8 +20,8 @@ npm run lint     # Run ESLint
 ### Core Flow
 1. User submits URL + platform type via React form (`app/page.tsx`)
 2. API route (`app/api/generate-blog/route.ts`) orchestrates the pipeline:
-   - Browser automation extracts page content
-   - OpenAI GPT-4o cleans content (removes nav/footers)
+   - **Chrome DevTools MCP server** (`lib/services/chrome-devtools-scrape.ts`, HTTP to `127.0.0.1:9223` by default) extracts page text — not Playwright
+   - OpenAI cleans content (removes nav/footers)
    - Strategy pattern transforms content for target platform
 3. Medium strategy generates interactive HTML demos for technical content
 
@@ -31,15 +31,14 @@ npm run lint     # Run ESLint
 - `MediumStrategy.ts` - English professional format with code examples; auto-generates demos for technical content saved to `/public/demos/`
 - `StrategyFactory.ts` - Returns strategy based on type parameter ('rednote' or 'medium')
 
-### Browser Automation (`lib/browser/`)
-- `MCPManagerPW.ts` - Playwright/Patchright wrapper with retry logic, tab management, persistent browser context
-- `instance.ts` - Singleton export of MCPManagerPW
+### Web scraping (`lib/services/chrome-devtools-scrape.ts`)
+- Calls **local-service `chrome-dev-mcp-server`** REST API (`POST /api/new_page`, `/api/evaluate_script`, etc.) — same stack as Cursor Chrome DevTools MCP, not Playwright.
+- Env: `CHROME_DEVTOOLS_MCP_URL` or `CDS_BASE_URL` (default `http://127.0.0.1:9223`).
 
 ### Key External Dependencies
-- **OpenAI GPT-4o** - Content extraction, translation, and formatting (configured via `.env`)
+- **OpenAI** - Content extraction, translation, and formatting (configured via `.env`)
 - **Claude Agent SDK** - Demo HTML generation for technical content in MediumStrategy
-- **Playwright/Patchright** - Headless browser for web scraping
-- Browser profile stored in system temp directory
+- **Playwright** (optional) - Used only by `DemoGifService` for headless GIF recording, not for URL scraping
 
 ## Configuration
 

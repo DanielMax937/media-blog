@@ -3,6 +3,12 @@ import OpenAI from 'openai';
 import { query, Options } from '@anthropic-ai/claude-agent-sdk';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
+import { uploadToBitstripe } from '../services/BitstripeUploader';
+import { findDemoInsertionSlots, replaceSlotInMarkdown } from '../services/MarkdownDemoInserter';
+import { planInteractionSteps, generateGifForDemo } from '../services/DemoGifService';
+import { generateCoverImage } from '../services/CoverImageService';
+import { logApi, logOpenAiRawResponseIfEmpty } from '../services/api-logger';
 
 export class MediumStrategy implements BlogStrategy {
     private openai: OpenAI;
@@ -22,7 +28,7 @@ export class MediumStrategy implements BlogStrategy {
             return;
         }
 
-        let indexContent = fs.readFileSync(indexPath, 'utf-8');
+        const indexContent = fs.readFileSync(indexPath, 'utf-8');
 
         // Find the demos array in the JavaScript
         const demosArrayMatch = indexContent.match(/const demos = \[([\s\S]*?)\];/);
@@ -198,9 +204,11 @@ After writing, output the complete HTML content.`,
     }
 
     async generate(content: string): Promise<{ content: string; demo?: string }> {
-        // 1. Translate to English
+        const model = process.env.OPENAI_MODEL ?? 'gpt-5.4';
+        let t0 = Date.now();
+        logApi('openai', 'MediumStrategy.translate start', { model, inputChars: content.length });
         const translateResponse = await this.openai.chat.completions.create({
-            model: 'gpt-4o',
+            model,
             messages: [
                 {
                     role: 'system',
@@ -212,11 +220,18 @@ After writing, output the complete HTML content.`,
                 },
             ],
         });
-        const englishContent = translateResponse.choices[0].message.content || '';
+        const englishContent = translateResponse.choices?.[0]?.message?.content || '';
+        logOpenAiRawResponseIfEmpty('MediumStrategy.translate', englishContent.length, translateResponse);
+        logApi('openai', 'MediumStrategy.translate ok', {
+            model,
+            durationMs: Date.now() - t0,
+            outputChars: englishContent.length,
+        });
 
-        // 2. Detect if it's a technical blog early
+        t0 = Date.now();
+        logApi('openai', 'MediumStrategy.detectTechnical start', { model });
         const detectResponse = await this.openai.chat.completions.create({
-            model: 'gpt-4o',
+            model,
             messages: [
                 {
                     role: 'system',
@@ -228,7 +243,14 @@ After writing, output the complete HTML content.`,
                 },
             ],
         });
-        const isTechnical = detectResponse.choices[0].message.content?.trim().toUpperCase().includes('YES');
+        const detectMsg = detectResponse.choices?.[0]?.message?.content ?? '';
+        logOpenAiRawResponseIfEmpty('MediumStrategy.detectTechnical', detectMsg.trim().length, detectResponse);
+        const isTechnical = detectMsg.trim().toUpperCase().includes('YES');
+        logApi('openai', 'MediumStrategy.detectTechnical ok', {
+            model,
+            durationMs: Date.now() - t0,
+            isTechnical: !!isTechnical,
+        });
 
         let demo = undefined;
         let demoFilename = '';
@@ -244,9 +266,14 @@ After writing, output the complete HTML content.`,
             demoCodeExamples = `\n\nHere is the working demo code that was generated:\n\`\`\`html\n${demo}\n\`\`\`\n\nUse relevant snippets from this code to create practical code examples in the article.`;
         }
 
-        // 5. Format as Medium Blog with image placeholders (and code examples if technical)
+        t0 = Date.now();
+        logApi('openai', 'MediumStrategy.formatArticle start', {
+            model,
+            isTechnical: !!isTechnical,
+            englishChars: englishContent.length,
+        });
         const formatResponse = await this.openai.chat.completions.create({
-            model: 'gpt-4o',
+            model,
             messages: [
                 {
                     role: 'system',
@@ -278,7 +305,13 @@ Example demo screenshot: ![Screenshot showing the interactive button with hover 
                 },
             ],
         });
-        let mediumContent = formatResponse.choices[0].message.content || '';
+        let mediumContent = formatResponse.choices?.[0]?.message?.content || '';
+        logOpenAiRawResponseIfEmpty('MediumStrategy.formatArticle', mediumContent.length, formatResponse);
+        logApi('openai', 'MediumStrategy.formatArticle ok', {
+            model,
+            durationMs: Date.now() - t0,
+            outputChars: mediumContent.length,
+        });
 
         // 6. Update index.html and upload if a demo was generated
         if (demo && demoFilename) {
@@ -291,7 +324,17 @@ Example demo screenshot: ![Screenshot showing the interactive button with hover 
             this.updateIndexHtml(demosDir, demoFilename, blogTitle);
             await this.uploadDemoFiles(demosDir, demoFilename);
 
-            // 7. Add demo footer
+            const demoPublicUrl = `https://www.bitstripe.cn/files/${demoFilename}`;
+
+            // 7. Generate demo GIFs for each insertion slot and embed into markdown
+            mediumContent = await this.injectDemoGifs(
+                mediumContent,
+                demo,
+                path.join(demosDir, demoFilename),
+                demoPublicUrl
+            );
+
+            // 8. Add demo footer
             const demoFooter = `
 
 ---
@@ -300,7 +343,7 @@ Example demo screenshot: ![Screenshot showing the interactive button with hover 
 
 Want to see these concepts in action? I've created an **interactive demo** where you can experiment with the code and see real-time results.
 
-**[View the Live Demo](https://www.bitstripe.cn/files/${demoFilename})**
+**[View the Live Demo](${demoPublicUrl})**
 
 Explore more demos from my previous articles in the **[Demo Gallery](https://www.bitstripe.cn/files/index.html)**.
 
@@ -309,6 +352,115 @@ Explore more demos from my previous articles in the **[Demo Gallery](https://www
             mediumContent += demoFooter;
         }
 
+        // 9. Generate cover image and prepend to markdown
+        mediumContent = await this.addCoverImage(mediumContent);
+
         return { content: mediumContent, demo };
+    }
+
+    /**
+     * Find DEMO_SCREENSHOT_PLACEHOLDER slots in the markdown, generate a GIF for each
+     * via the rrweb pipeline, upload to bitstripe, and replace the slot with the GIF
+     * plus a link to the live demo. Failures are silently skipped.
+     */
+    private async injectDemoGifs(
+        markdown: string,
+        demoHtml: string,
+        demoLocalPath: string,
+        demoPublicUrl: string
+    ): Promise<string> {
+        let result = markdown;
+
+        try {
+            const slots = await findDemoInsertionSlots(result, this.openai);
+            if (slots.length === 0) {
+                console.log('[MediumStrategy] No demo insertion slots found, skipping GIF generation');
+                return result;
+            }
+
+            const gifDir = path.join(os.tmpdir(), `medium-gifs-${Date.now()}`);
+            fs.mkdirSync(gifDir, { recursive: true });
+
+            for (const slot of slots) {
+                try {
+                    console.log(`[MediumStrategy] Generating GIF for slot ${slot.index}: ${slot.contextDescription.substring(0, 60)}...`);
+
+                    const steps = await planInteractionSteps(
+                        result,
+                        demoHtml,
+                        slot.contextDescription,
+                        this.openai
+                    );
+
+                    const gifPath = path.join(gifDir, `demo-gif-${slot.index}-${Date.now()}.gif`);
+                    const localGifPath = await generateGifForDemo(demoLocalPath, steps, gifPath);
+
+                    if (!localGifPath) {
+                        console.warn(`[MediumStrategy] GIF generation failed for slot ${slot.index}, skipping`);
+                        // Remove the placeholder from markdown without inserting anything
+                        result = replaceSlotInMarkdown(result, slot, '');
+                        continue;
+                    }
+
+                    const gifUrl = await uploadToBitstripe(localGifPath).catch((err) => {
+                        console.warn(`[MediumStrategy] GIF upload failed for slot ${slot.index}:`, err);
+                        return null;
+                    });
+
+                    if (!gifUrl) {
+                        result = replaceSlotInMarkdown(result, slot, '');
+                        fs.unlink(localGifPath, () => {});
+                        continue;
+                    }
+
+                    // Replace placeholder with GIF + demo callout
+                    const gifMarkdown = `![Demo animation](${gifUrl})\n\n> 🎮 **Try it live:** [Open the interactive demo](${demoPublicUrl}) to experience this yourself.`;
+                    result = replaceSlotInMarkdown(result, slot, gifMarkdown);
+
+                    console.log(`[MediumStrategy] ✓ GIF slot ${slot.index} inserted: ${gifUrl}`);
+                    fs.unlink(localGifPath, () => {});
+                } catch (slotErr) {
+                    console.error(`[MediumStrategy] Slot ${slot.index} failed:`, slotErr);
+                    result = replaceSlotInMarkdown(result, slot, '');
+                }
+            }
+        } catch (err) {
+            console.error('[MediumStrategy] injectDemoGifs failed entirely:', err);
+        }
+
+        return result;
+    }
+
+    /**
+     * Generate a cover image for the article, upload to bitstripe, and prepend
+     * it to the markdown. Gracefully skips if generation/upload fails.
+     */
+    private async addCoverImage(markdown: string): Promise<string> {
+        try {
+            const tmpDir = os.tmpdir();
+            const coverPath = await generateCoverImage(markdown, this.openai, tmpDir);
+            if (!coverPath) return markdown;
+
+            const coverUrl = await uploadToBitstripe(coverPath).catch((err) => {
+                console.warn('[MediumStrategy] Cover upload failed:', err);
+                return null;
+            });
+
+            fs.unlink(coverPath, () => {});
+
+            if (!coverUrl) return markdown;
+
+            // Prepend cover image after the first H1 heading (or at the very top)
+            const h1Match = markdown.match(/^(#\s+.+)$/m);
+            if (h1Match) {
+                const idx = markdown.indexOf(h1Match[0]) + h1Match[0].length;
+                const coverBlock = `\n\n![Cover Image](${coverUrl})\n`;
+                return markdown.slice(0, idx) + coverBlock + markdown.slice(idx);
+            }
+            return `![Cover Image](${coverUrl})\n\n` + markdown;
+        } catch (err) {
+            console.error('[MediumStrategy] addCoverImage failed:', err);
+            return markdown;
+        }
     }
 }

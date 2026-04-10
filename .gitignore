@@ -28,6 +28,9 @@
 blog2media.log
 blog2media.pid
 
+# local SQLite (dev)
+/data/
+
 # debug
 npm-debug.log*
 yarn-debug.log*

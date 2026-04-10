@@ -8,6 +8,7 @@ export default function BlogGenerator() {
     const [loading, setLoading] = useState(false)
     const [result, setResult] = useState('')
     const [demo, setDemo] = useState('')
+    const [imageUrls, setImageUrls] = useState<string[]>([])
     const [error, setError] = useState('')
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -32,6 +33,7 @@ export default function BlogGenerator() {
         setError('')
         setResult('')
         setDemo('')
+        setImageUrls([])
 
         try {
             const response = await fetch('/api/generate-blog', {
@@ -49,6 +51,7 @@ export default function BlogGenerator() {
 
             const data = await response.json()
             setResult(data.content)
+            setImageUrls(Array.isArray(data.imageUrls) ? data.imageUrls : [])
             if (data.demo) {
                 setDemo(data.demo)
             }
@@ -153,6 +156,35 @@ export default function BlogGenerator() {
                     </div>
                 )}
             </div>
+
+            <section data-testid="image-urls" className="mt-8 border-t border-gray-200 dark:border-gray-700 pt-6">
+                <h2 className="text-xl font-bold mb-2">Image links (XHS)</h2>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">
+                    Returned separately from markdown — images are not embedded in the text above.
+                </p>
+                {!result ? (
+                    <p className="text-sm text-gray-500 dark:text-gray-400">—</p>
+                ) : imageUrls.length === 0 ? (
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                        No image URLs (e.g. Medium mode, or webgemini/upload unavailable).
+                    </p>
+                ) : (
+                    <ul className="list-disc list-inside space-y-2">
+                        {imageUrls.map((u) => (
+                            <li key={u}>
+                                <a
+                                    href={u}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-indigo-600 dark:text-indigo-400 hover:underline break-all"
+                                >
+                                    {u}
+                                </a>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </section>
         </div>
     )
 }
