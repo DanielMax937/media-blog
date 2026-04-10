@@ -47,7 +47,7 @@ export async function runMediumJob(jobId: string, requestUrl: string): Promise<v
         const { content: markdown } = await strategy.generate(mainContent);
         const imageUrls = extractImageUrls(markdown);
         const mdUrl = await writeMdAndUpload(markdown, 'medium');
-        const generationLogId = logGeneration(requestUrl, mdUrl, imageUrls);
+        const generationLogId = logGeneration(requestUrl, mdUrl, imageUrls, 'medium');
 
         updateMediumJob(jobId, {
             status: 'completed',

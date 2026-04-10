@@ -17,7 +17,7 @@ export async function pickFirstUnprocessedV2exJobsTopicUrl(): Promise<string | n
 
     let skipped = 0;
     for (const href of links) {
-        if (!hasGenerationLogForSourceUrl(href)) {
+        if (!hasGenerationLogForSourceUrl(href, 'rednote')) {
             logApi('api', 'v2ex.jobs.pick: first unprocessed topic', {
                 url: href,
                 skippedAlreadyInLog: skipped,

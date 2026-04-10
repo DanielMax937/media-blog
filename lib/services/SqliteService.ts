@@ -6,10 +6,13 @@ import fs from 'fs';
 const DB_DIR = path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DB_DIR, 'blog2media.db');
 
+export type GenerationPlatform = 'rednote' | 'medium';
+
 /** One generation run logged to SQLite. */
 export interface GenerationLog {
     id?: number;
     source_url: string;
+    platform: GenerationPlatform;
     md_url: string;
     /** JSON-serialized string[] */
     image_urls: string;
@@ -34,11 +37,19 @@ function getDb(): Database.Database {
         CREATE TABLE IF NOT EXISTS generation_log (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             source_url  TEXT    NOT NULL,
+            platform    TEXT    NOT NULL DEFAULT 'rednote',
             md_url      TEXT    NOT NULL,
             image_urls  TEXT    NOT NULL DEFAULT '[]',
             created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
         )
     `);
+
+    // Migration: add platform column to pre-existing databases (ignored if already present)
+    try {
+        _db.exec(`ALTER TABLE generation_log ADD COLUMN platform TEXT NOT NULL DEFAULT 'rednote'`);
+    } catch {
+        // Column already exists — safe to ignore
+    }
 
     _db.exec(`
         CREATE TABLE IF NOT EXISTS rednote_job (
@@ -76,18 +87,20 @@ function getDb(): Database.Database {
  * @param sourceUrl  The original source page URL the user submitted
  * @param mdUrl      The bitstripe public URL of the uploaded .md file
  * @param imageUrls  List of artifact image URLs (XHS slides / cover / GIFs)
+ * @param platform   Which platform generated this output ('rednote' | 'medium')
  * @returns The inserted row id
  */
 export function logGeneration(
     sourceUrl: string,
     mdUrl: string,
-    imageUrls: string[]
+    imageUrls: string[],
+    platform: GenerationPlatform = 'rednote'
 ): number {
     const db = getDb();
     const stmt = db.prepare(
-        'INSERT INTO generation_log (source_url, md_url, image_urls) VALUES (?, ?, ?)'
+        'INSERT INTO generation_log (source_url, platform, md_url, image_urls) VALUES (?, ?, ?, ?)'
     );
-    const result = stmt.run(sourceUrl, mdUrl, JSON.stringify(imageUrls));
+    const result = stmt.run(sourceUrl, platform, mdUrl, JSON.stringify(imageUrls));
     return result.lastInsertRowid as number;
 }
 
@@ -111,12 +124,12 @@ export function getLogsBySourceUrl(sourceUrl: string): GenerationLog[] {
         .all(sourceUrl) as GenerationLog[];
 }
 
-/** True if `generation_log` already has at least one row for this source URL (processed Rednote output). */
-export function hasGenerationLogForSourceUrl(sourceUrl: string): boolean {
+/** True if `generation_log` already has at least one row for this source URL + platform. */
+export function hasGenerationLogForSourceUrl(sourceUrl: string, platform: GenerationPlatform): boolean {
     const db = getDb();
     const row = db
-        .prepare('SELECT 1 AS ok FROM generation_log WHERE source_url = ? LIMIT 1')
-        .get(sourceUrl) as { ok: number } | undefined;
+        .prepare('SELECT 1 AS ok FROM generation_log WHERE source_url = ? AND platform = ? LIMIT 1')
+        .get(sourceUrl, platform) as { ok: number } | undefined;
     return row != null;
 }
 

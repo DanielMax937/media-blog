@@ -34,7 +34,7 @@ export async function runRednoteJob(jobId: string, requestUrl: string): Promise<
         const { content: markdown, imageUrls = [] } = await strategy.generate(mainContent);
         const mdUrl = await writeMdAndUpload(markdown, 'rednote');
         // Persist source URL + md + image URLs to SQLite `generation_log` (and link from `rednote_job`).
-        const generationLogId = logGeneration(requestUrl, mdUrl, imageUrls);
+        const generationLogId = logGeneration(requestUrl, mdUrl, imageUrls, 'rednote');
 
         updateRednoteJob(jobId, {
             status: 'completed',

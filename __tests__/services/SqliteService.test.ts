@@ -51,13 +51,13 @@ describe('SqliteService', () => {
 
     describe('logGeneration', () => {
         it('inserts a row and returns a numeric id', () => {
-            const id = logGeneration('https://example.com', 'https://cdn.example.com/post.md', ['https://cdn.example.com/img1.png']);
+            const id = logGeneration('https://example.com', 'https://cdn.example.com/post.md', ['https://cdn.example.com/img1.png'], 'rednote');
             expect(typeof id).toBe('number');
             expect(id).toBeGreaterThan(0);
         });
 
         it('stores source_url and md_url correctly', () => {
-            logGeneration('https://test.com/article', 'https://bitstripe.cn/files/a.md', []);
+            logGeneration('https://test.com/article', 'https://bitstripe.cn/files/a.md', [], 'rednote');
             const logs = getAllLogs();
             expect(logs.length).toBeGreaterThanOrEqual(1);
             const row = logs.find(l => l.source_url === 'https://test.com/article');
@@ -67,7 +67,7 @@ describe('SqliteService', () => {
 
         it('serialises image_urls as JSON string', () => {
             const images = ['https://cdn.example.com/img1.png', 'https://cdn.example.com/img2.png'];
-            logGeneration('https://img.test', 'https://bitstripe.cn/files/b.md', images);
+            logGeneration('https://img.test', 'https://bitstripe.cn/files/b.md', images, 'medium');
             const logs = getAllLogs();
             const row = logs.find(l => l.source_url === 'https://img.test');
             expect(row).toBeDefined();
@@ -75,17 +75,27 @@ describe('SqliteService', () => {
         });
 
         it('stores empty image_urls as empty JSON array', () => {
-            logGeneration('https://empty.test', 'https://bitstripe.cn/files/c.md', []);
+            logGeneration('https://empty.test', 'https://bitstripe.cn/files/c.md', [], 'medium');
             const logs = getAllLogs();
             const row = logs.find(l => l.source_url === 'https://empty.test');
             expect(JSON.parse(row!.image_urls)).toEqual([]);
+        });
+
+        it('stores platform correctly', () => {
+            logGeneration('https://platform.test/1', 'https://bitstripe.cn/files/p1.md', [], 'rednote');
+            logGeneration('https://platform.test/2', 'https://bitstripe.cn/files/p2.md', [], 'medium');
+            const logs = getAllLogs();
+            const r = logs.find(l => l.source_url === 'https://platform.test/1');
+            const m = logs.find(l => l.source_url === 'https://platform.test/2');
+            expect(r?.platform).toBe('rednote');
+            expect(m?.platform).toBe('medium');
         });
     });
 
     describe('getAllLogs', () => {
         it('returns rows in descending id order', () => {
-            logGeneration('https://a.com', 'https://bitstripe.cn/files/a.md', []);
-            logGeneration('https://b.com', 'https://bitstripe.cn/files/b.md', []);
+            logGeneration('https://a.com', 'https://bitstripe.cn/files/a.md', [], 'rednote');
+            logGeneration('https://b.com', 'https://bitstripe.cn/files/b.md', [], 'medium');
             const logs = getAllLogs();
             expect(logs.length).toBeGreaterThanOrEqual(2);
             // Newest first
@@ -95,8 +105,8 @@ describe('SqliteService', () => {
 
     describe('getLogsBySourceUrl', () => {
         it('returns only rows matching the given source URL', () => {
-            logGeneration('https://filter.com', 'https://bitstripe.cn/files/f.md', []);
-            logGeneration('https://other.com', 'https://bitstripe.cn/files/o.md', []);
+            logGeneration('https://filter.com', 'https://bitstripe.cn/files/f.md', [], 'rednote');
+            logGeneration('https://other.com', 'https://bitstripe.cn/files/o.md', [], 'medium');
             const logs = getLogsBySourceUrl('https://filter.com');
             expect(logs.every(l => l.source_url === 'https://filter.com')).toBe(true);
         });
@@ -108,13 +118,26 @@ describe('SqliteService', () => {
     });
 
     describe('hasGenerationLogForSourceUrl', () => {
-        it('returns false when no log exists for URL', () => {
-            expect(hasGenerationLogForSourceUrl('https://missing.example/t/1')).toBe(false);
+        it('returns false when no log exists for URL + platform', () => {
+            expect(hasGenerationLogForSourceUrl('https://missing.example/t/1', 'rednote')).toBe(false);
         });
 
-        it('returns true after logGeneration for that source_url', () => {
-            logGeneration('https://seen.example/t/2', 'https://bitstripe.cn/files/x.md', []);
-            expect(hasGenerationLogForSourceUrl('https://seen.example/t/2')).toBe(true);
+        it('returns true after logGeneration for matching source_url + platform', () => {
+            logGeneration('https://seen.example/t/2', 'https://bitstripe.cn/files/x.md', [], 'rednote');
+            expect(hasGenerationLogForSourceUrl('https://seen.example/t/2', 'rednote')).toBe(true);
+        });
+
+        it('returns false for the same URL on a different platform', () => {
+            logGeneration('https://cross.example/t/3', 'https://bitstripe.cn/files/y.md', [], 'rednote');
+            // Rednote done but medium not yet
+            expect(hasGenerationLogForSourceUrl('https://cross.example/t/3', 'medium')).toBe(false);
+        });
+
+        it('allows the same URL to be logged for both platforms independently', () => {
+            logGeneration('https://both.example/t/4', 'https://bitstripe.cn/files/r.md', [], 'rednote');
+            logGeneration('https://both.example/t/4', 'https://bitstripe.cn/files/m.md', [], 'medium');
+            expect(hasGenerationLogForSourceUrl('https://both.example/t/4', 'rednote')).toBe(true);
+            expect(hasGenerationLogForSourceUrl('https://both.example/t/4', 'medium')).toBe(true);
         });
     });
 
