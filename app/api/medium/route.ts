@@ -2,11 +2,10 @@ import { NextResponse } from 'next/server'
 import { logApi, logApiError } from '@/lib/services/api-logger'
 import { createMediumJob } from '@/lib/services/SqliteService'
 import { runMediumJob } from '@/lib/medium/run-medium-job'
+import { pickFirstUnprocessedZhangxinxuArticleUrl } from '@/lib/medium/zhangxinxu-article-url-picker'
 
 // Allow long-running background pipeline (LLM + webgemini)
 export const maxDuration = 3600;
-
-const DEFAULT_URL = 'https://www.zhangxinxu.com/';
 
 /** `curl -X POST` without `-d` sends an empty body; `request.json()` throws. Treat as `{}`. */
 async function readJsonBodyObject(request: Request): Promise<Record<string, unknown>> {
@@ -27,9 +26,11 @@ async function readJsonBodyObject(request: Request): Promise<Record<string, unkn
 
 /**
  * POST /api/medium
- * Body: { url?: string } — if `url` omitted or empty, defaults to https://www.zhangxinxu.com/
+ * Body: { url?: string } — if `url` omitted or empty, uses chrome-dev-mcp-server to open the
+ * zhangxinxu.com JS category listing, extracts article permalink URLs, skips URLs already in
+ * `generation_log` (platform='medium'), and picks the first new one.
  * Empty body (e.g. `curl -X POST` without `-d`) is treated like `{}`.
- * Response: 202 { jobId: string } — pipeline runs in-process (scraping via chrome-devtools-mcp-server).
+ * Response: 202 { jobId: string } — pipeline runs in-process.
  * Poll GET /api/medium/[jobId]
  */
 export async function POST(request: Request) {
@@ -40,8 +41,18 @@ export async function POST(request: Request) {
         requestUrl = typeof url === 'string' ? url.trim() : ''
 
         if (!requestUrl) {
-            requestUrl = DEFAULT_URL
-            logApi('api', 'POST /api/medium using default url', { url: requestUrl })
+            const picked = await pickFirstUnprocessedZhangxinxuArticleUrl()
+            if (!picked) {
+                return NextResponse.json(
+                    {
+                        error:
+                            'No zhangxinxu.com article URL available: list empty or every article URL already has a generation_log entry',
+                    },
+                    { status: 400 },
+                )
+            }
+            requestUrl = picked
+            logApi('api', 'POST /api/medium resolved url from zhangxinxu category listing', { url: requestUrl })
         }
 
         const jobId = createMediumJob(requestUrl)

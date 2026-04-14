@@ -31,6 +31,7 @@ const DEFAULT_NEW_PAGE_HTTP_BUFFER_MS = 90_000;
 const DEFAULT_EVAL_HTTP_TIMEOUT_MS = 120_000;
 const DEFAULT_LIST_HTTP_TIMEOUT_MS = 60_000;
 const DEFAULT_CLOSE_HTTP_TIMEOUT_MS = 60_000;
+const DEFAULT_SELECT_HTTP_TIMEOUT_MS = 60_000;
 
 /** Let V2EX jobs list DOM settle after navigation before querying `.cell.item` (0 = skip). */
 const DEFAULT_V2EX_JOBS_POST_WAIT_MS = 3_000;
@@ -110,6 +111,13 @@ async function cdsPost(
     return json;
 }
 
+async function selectPageById(pageId: number, selectTimeoutMs: number): Promise<void> {
+    const select = await cdsPost('/api/select_page', { pageId }, selectTimeoutMs);
+    if (select.is_error) {
+        throw new Error(firstTextBlock(select) || `select_page failed for pageId=${pageId}`);
+    }
+}
+
 /**
  * chrome-dev-mcp-server wraps `evaluate_script` results in prose + a fenced JSON string, e.g.
  * `Script ran on page and returned:\n```json\n\"<html>...\"\n```` — without unwrapping,
@@ -164,6 +172,7 @@ export async function scrapeUrlBodyText(url: string): Promise<string> {
     const evalTimeout = envMs('CDS_EVAL_HTTP_TIMEOUT_MS', DEFAULT_EVAL_HTTP_TIMEOUT_MS);
     const listTimeout = envMs('CDS_LIST_HTTP_TIMEOUT_MS', DEFAULT_LIST_HTTP_TIMEOUT_MS);
     const closeTimeout = envMs('CDS_CLOSE_HTTP_TIMEOUT_MS', DEFAULT_CLOSE_HTTP_TIMEOUT_MS);
+    const selectTimeout = envMs('CDS_SELECT_HTTP_TIMEOUT_MS', DEFAULT_SELECT_HTTP_TIMEOUT_MS);
 
     const nav = await cdsPost('/api/new_page', { url, timeout: navTimeout }, newPageHttpTimeout);
     if (nav.is_error) {
@@ -178,6 +187,9 @@ export async function scrapeUrlBodyText(url: string): Promise<string> {
         } catch {
             /* ignore */
         }
+    }
+    if (pageId != null) {
+        await selectPageById(pageId, selectTimeout);
     }
 
     const evalRes = await cdsPost(
@@ -224,6 +236,7 @@ export async function listV2exJobsTabCountLividTopicUrls(
     const evalTimeout = envMs('CDS_EVAL_HTTP_TIMEOUT_MS', DEFAULT_EVAL_HTTP_TIMEOUT_MS);
     const listTimeout = envMs('CDS_LIST_HTTP_TIMEOUT_MS', DEFAULT_LIST_HTTP_TIMEOUT_MS);
     const closeTimeout = envMs('CDS_CLOSE_HTTP_TIMEOUT_MS', DEFAULT_CLOSE_HTTP_TIMEOUT_MS);
+    const selectTimeout = envMs('CDS_SELECT_HTTP_TIMEOUT_MS', DEFAULT_SELECT_HTTP_TIMEOUT_MS);
 
     const nav = await cdsPost('/api/new_page', { url: jobsTabUrl, timeout: navTimeout }, newPageHttpTimeout);
     if (nav.is_error) {
@@ -238,6 +251,9 @@ export async function listV2exJobsTabCountLividTopicUrls(
         } catch {
             /* ignore */
         }
+    }
+    if (pageId != null) {
+        await selectPageById(pageId, selectTimeout);
     }
 
     const postWaitMs = envMs('CDS_V2EX_JOBS_POST_WAIT_MS', DEFAULT_V2EX_JOBS_POST_WAIT_MS);
@@ -373,6 +389,156 @@ export async function listV2exJobsTabCountLividTopicUrls(
     return [];
 }
 
+const ZHANGXINXU_CATEGORY_JS_URL = 'https://www.zhangxinxu.com/wordpress/category/js/';
+
+function extractZhangxinxuArticleUrlsFromHtml(html: string): string[] {
+    if (!html) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    const matches = html.match(/https:\/\/www\.zhangxinxu\.com\/wordpress\/\d{4}\/\d{2}\/[^"'#?\s<]+\/?/g) || [];
+    for (const href of matches) {
+        try {
+            const u = new URL(href);
+            u.hash = '';
+            u.search = '';
+            const canonical = u.href;
+            if (!seen.has(canonical)) {
+                seen.add(canonical);
+                out.push(canonical);
+            }
+        } catch {
+            /* ignore malformed matches */
+        }
+    }
+    return out;
+}
+
+/**
+ * Opens a zhangxinxu.com WordPress category page and returns all article permalink URLs
+ * found via `a[rel="bookmark"]` selectors (standard WordPress bookmark links).
+ * If `categoryUrl` is omitted, defaults to the JS category listing.
+ */
+export async function listZhangxinxuCategoryArticleUrls(
+    categoryUrl: string = ZHANGXINXU_CATEGORY_JS_URL,
+): Promise<string[]> {
+    const navTimeout = envMs('CDS_NAVIGATION_TIMEOUT_MS', DEFAULT_NAV_TIMEOUT_MS);
+    const buffer = envMs('CDS_NEW_PAGE_HTTP_BUFFER_MS', DEFAULT_NEW_PAGE_HTTP_BUFFER_MS);
+    const newPageHttpTimeout = envMs('CDS_NEW_PAGE_HTTP_TIMEOUT_MS', navTimeout + buffer);
+    const evalTimeout = envMs('CDS_EVAL_HTTP_TIMEOUT_MS', DEFAULT_EVAL_HTTP_TIMEOUT_MS);
+    const listTimeout = envMs('CDS_LIST_HTTP_TIMEOUT_MS', DEFAULT_LIST_HTTP_TIMEOUT_MS);
+    const closeTimeout = envMs('CDS_CLOSE_HTTP_TIMEOUT_MS', DEFAULT_CLOSE_HTTP_TIMEOUT_MS);
+    const selectTimeout = envMs('CDS_SELECT_HTTP_TIMEOUT_MS', DEFAULT_SELECT_HTTP_TIMEOUT_MS);
+
+    const nav = await cdsPost('/api/new_page', { url: categoryUrl, timeout: navTimeout }, newPageHttpTimeout);
+    if (nav.is_error) {
+        throw new Error(firstTextBlock(nav) || 'new_page failed');
+    }
+
+    let pageId = parsePageIdFromToolText(firstTextBlock(nav));
+    if (pageId == null) {
+        try {
+            const list = await cdsPost('/api/list_pages', {}, listTimeout);
+            if (!list.is_error) pageId = parsePageIdFromToolText(firstTextBlock(list));
+        } catch {
+            /* ignore */
+        }
+    }
+    if (pageId != null) {
+        await selectPageById(pageId, selectTimeout);
+    }
+
+    const evalRes = await cdsPost(
+        '/api/evaluate_script',
+        {
+            function: `() => {
+          const seen = new Set();
+          const out = [];
+          const selectors = [
+            'a[rel="bookmark"]',
+            '.entry-title a',
+            'article h2 a',
+            '.post h2 a',
+            'h2 a[rel="bookmark"]',
+          ];
+          const anchors = [
+            ...selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector))),
+          ];
+          for (const a of anchors) {
+            const href = (a.getAttribute('href') || a.href || '').trim();
+            if (!href) continue;
+            try {
+              const u = new URL(href, location.href);
+              if (!/^https:\\/\\/www\\.zhangxinxu\\.com\\/wordpress\\/\\d{4}\\/\\d{2}\\//.test(u.href)) continue;
+              u.hash = '';
+              u.search = '';
+              const canonical = u.href;
+              if (!seen.has(canonical)) {
+                seen.add(canonical);
+                out.push(canonical);
+              }
+            } catch (e) {
+              /* skip bad href */
+            }
+          }
+          return JSON.stringify({
+            href: location.href,
+            title: document.title || '',
+            relBookmark: document.querySelectorAll('a[rel="bookmark"]').length,
+            entryTitle: document.querySelectorAll('.entry-title a').length,
+            anchorCount: anchors.length,
+            urls: out,
+            html: out.length ? '' : document.documentElement.outerHTML,
+          });
+        }`,
+        },
+        evalTimeout,
+    );
+
+    const raw = parseEvaluateResultText(evalRes);
+
+    if (pageId != null) {
+        try {
+            const close = await cdsPost('/api/close_page', { pageId }, closeTimeout);
+            if (close.is_error) {
+                console.warn('[chrome-devtools-scrape] close_page failed:', firstTextBlock(close).slice(0, 200));
+            }
+        } catch (e) {
+            console.warn('[chrome-devtools-scrape] close_page error:', e);
+        }
+    }
+
+    try {
+        const v = JSON.parse(raw) as unknown;
+        if (Array.isArray(v)) {
+            return v.filter((x): x is string => typeof x === 'string');
+        }
+        if (v && typeof v === 'object') {
+            const o = v as Record<string, unknown>;
+            const urls = Array.isArray(o.urls)
+                ? o.urls.filter((x): x is string => typeof x === 'string')
+                : [];
+            if (urls.length > 0) {
+                return urls;
+            }
+            const fallback = extractZhangxinxuArticleUrlsFromHtml(
+                typeof o.html === 'string' ? o.html : '',
+            );
+            logApi('browser', 'zhangxinxu.category: diagnostics', {
+                href: typeof o.href === 'string' ? o.href : '',
+                title: typeof o.title === 'string' ? o.title.slice(0, 120) : '',
+                relBookmark: Number(o.relBookmark ?? 0),
+                entryTitle: Number(o.entryTitle ?? 0),
+                anchorCount: Number(o.anchorCount ?? 0),
+                fallbackCount: fallback.length,
+            });
+            return fallback;
+        }
+    } catch {
+        /* fall through */
+    }
+    return [];
+}
+
 export function getChromeDevToolsBaseUrl(): string {
     return CDS_BASE;
 }
@@ -390,6 +556,14 @@ function parsePageIdFromToolText(text: string): number | null {
         }
     } catch {
         /* fall through */
+    }
+    const selected =
+        text.match(/^\s*(\d+): .*?\[selected\]\s*$/im) ??
+        text.match(/^\s*(\d+): .*?\[selected]/im);
+    if (selected) return Number(selected[1]);
+    const listedPageIds = Array.from(text.matchAll(/^\s*(\d+):\s+/gm)).map((m) => Number(m[1]));
+    if (listedPageIds.length > 0) {
+        return listedPageIds[listedPageIds.length - 1];
     }
     const m = text.match(/\bpageId["']?\s*[:=]\s*(\d+)/i) ?? text.match(/\bpage_id["']?\s*[:=]\s*(\d+)/i);
     return m ? Number(m[1]) : null;
