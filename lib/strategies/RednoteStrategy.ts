@@ -3,6 +3,7 @@ import OpenAI from 'openai';
 import { isWebgeminiAvailable, planXhsImages, generateXhsImages } from '../services/XhsImageService';
 import { uploadToBitstripe } from '../services/BitstripeUploader';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from '../services/api-logger';
+import { getImageGenerationBackendName } from '../services/GoogleImageService';
 
 export class RednoteStrategy implements BlogStrategy {
     private openai: OpenAI;
@@ -65,12 +66,18 @@ export class RednoteStrategy implements BlogStrategy {
     }
 
     private async generateAndUploadImages(markdown: string): Promise<string[]> {
-        logApi('webgemini', 'RednoteStrategy.isWebgeminiAvailable check', {});
+        const backend = getImageGenerationBackendName();
+        logApi(backend === 'google-ai' ? 'genai' : 'webgemini', 'RednoteStrategy.image backend availability check', {
+            backend,
+        });
         const available = await isWebgeminiAvailable();
-        logApi('webgemini', 'RednoteStrategy.isWebgeminiAvailable result', { ok: available });
+        logApi(backend === 'google-ai' ? 'genai' : 'webgemini', 'RednoteStrategy.image backend availability result', {
+            backend,
+            ok: available,
+        });
         if (!available) {
             throw new Error(
-                '[RednoteStrategy] webgemini service unavailable at 127.0.0.1:8200 — ' +
+                `[RednoteStrategy] ${backend} image generation backend unavailable — ` +
                 'XHS image generation is required for Xiaohongshu posts'
             );
         }
@@ -81,9 +88,10 @@ export class RednoteStrategy implements BlogStrategy {
 
         const tGen = Date.now();
         const localPaths = await generateXhsImages(plan);
-        logApi('webgemini', 'RednoteStrategy.generateXhsImages done', {
+        logApi(backend === 'google-ai' ? 'genai' : 'webgemini', 'RednoteStrategy.generateXhsImages done', {
             durationMs: Date.now() - tGen,
             fileCount: localPaths.length,
+            backend,
         });
 
         const urls: string[] = [];

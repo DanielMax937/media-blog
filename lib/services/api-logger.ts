@@ -5,7 +5,7 @@ import util from 'util';
 /** Defaults to project-root `blog2media.log` (already in .gitignore). */
 const LOG_FILE = process.env.BLOG2MEDIA_LOG_FILE ?? path.join(process.cwd(), 'blog2media.log');
 
-export type ApiLogCategory = 'openai' | 'webgemini' | 'bitstripe' | 'browser' | 'api';
+export type ApiLogCategory = 'openai' | 'webgemini' | 'genai' | 'bitstripe' | 'browser' | 'api';
 
 /**
  * Append one TSV-style line to the log file (async, non-blocking).

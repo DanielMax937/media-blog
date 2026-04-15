@@ -1,5 +1,20 @@
+jest.mock('../../lib/services/api-logger', () => ({
+    logApi: jest.fn(),
+    logApiError: jest.fn(),
+    logOpenAiRawResponseIfEmpty: jest.fn(),
+}));
+
+jest.mock('../../lib/services/GoogleImageService', () => ({
+    generateImageWithGoogleAi: jest.fn(),
+    getImageGenerationBackendName: jest.fn(),
+    isGoogleImageGenerationConfigured: jest.fn(),
+    isGoogleImageGenerationEnabled: jest.fn(),
+}));
+
 import { planXhsImages, isWebgeminiAvailable } from '../../lib/services/XhsImageService';
 import OpenAI from 'openai';
+import * as logger from '../../lib/services/api-logger';
+import * as googleImageService from '../../lib/services/GoogleImageService';
 
 jest.mock('openai');
 
@@ -11,6 +26,19 @@ function makeMockOpenAI(content: string): OpenAI {
 }
 
 describe('XhsImageService', () => {
+    const logApi = logger.logApi as jest.Mock;
+    const logApiError = logger.logApiError as jest.Mock;
+    const isEnabled = googleImageService.isGoogleImageGenerationEnabled as jest.Mock;
+    const isConfigured = googleImageService.isGoogleImageGenerationConfigured as jest.Mock;
+    const backendName = googleImageService.getImageGenerationBackendName as jest.Mock;
+
+    beforeEach(() => {
+        jest.resetAllMocks();
+        isEnabled.mockReturnValue(false);
+        isConfigured.mockReturnValue(false);
+        backendName.mockReturnValue('webgemini');
+    });
+
     describe('planXhsImages', () => {
         it('parses a valid plan from plain JSON response', async () => {
             const fakePlan = {
@@ -150,10 +178,74 @@ describe('XhsImageService', () => {
     });
 
     describe('isWebgeminiAvailable', () => {
-        it('returns false when service is unreachable', async () => {
-            // In test environment, webgemini is not running → should return false
+        it('returns true from env config in direct mode without hitting webgemini health', async () => {
+            isEnabled.mockReturnValue(true);
+            isConfigured.mockReturnValue(true);
+            backendName.mockReturnValue('google-ai');
+            const mockFetch = jest.spyOn(global, 'fetch' as never);
+
             const available = await isWebgeminiAvailable();
-            expect(typeof available).toBe('boolean');
+
+            expect(available).toBe(true);
+            expect(mockFetch).not.toHaveBeenCalled();
+            expect(logApi).toHaveBeenCalledWith('api', 'XhsImage backend selection', {
+                backend: 'google-ai',
+                directEnabled: true,
+                directConfigured: true,
+            });
+            expect(logApi).toHaveBeenCalledWith('genai', 'XhsImage direct backend config result', {
+                backend: 'google-ai',
+                ok: true,
+            });
+            mockFetch.mockRestore();
+        });
+
+        it('returns false when direct mode is enabled but config is incomplete', async () => {
+            isEnabled.mockReturnValue(true);
+            isConfigured.mockReturnValue(false);
+            backendName.mockReturnValue('google-ai');
+            const mockFetch = jest.spyOn(global, 'fetch' as never);
+
+            const available = await isWebgeminiAvailable();
+
+            expect(available).toBe(false);
+            expect(mockFetch).not.toHaveBeenCalled();
+            expect(logApi).toHaveBeenCalledWith('api', 'XhsImage backend selection', {
+                backend: 'google-ai',
+                directEnabled: true,
+                directConfigured: false,
+            });
+            expect(logApi).toHaveBeenCalledWith('genai', 'XhsImage direct backend config result', {
+                backend: 'google-ai',
+                ok: false,
+            });
+            mockFetch.mockRestore();
+        });
+
+        it('checks webgemini health only when direct mode is disabled', async () => {
+            const mockFetch = jest.spyOn(global, 'fetch' as never).mockRejectedValue(new Error('ECONNREFUSED'));
+
+            const available = await isWebgeminiAvailable();
+
+            expect(available).toBe(false);
+            expect(mockFetch).toHaveBeenCalledTimes(1);
+            expect(logApi).toHaveBeenCalledWith('api', 'XhsImage backend selection', {
+                backend: 'webgemini',
+                directEnabled: false,
+                directConfigured: false,
+            });
+            expect(logApi).toHaveBeenCalledWith(
+                'webgemini',
+                'XhsImage backend health check start',
+                expect.objectContaining({ backend: 'webgemini' })
+            );
+            expect(logApiError).toHaveBeenCalledWith(
+                'webgemini',
+                'XhsImage backend health check failed',
+                expect.any(Error),
+                expect.objectContaining({ backend: 'webgemini' })
+            );
+            mockFetch.mockRestore();
         });
     });
 });

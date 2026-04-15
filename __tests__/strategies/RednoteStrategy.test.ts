@@ -51,7 +51,7 @@ describe('RednoteStrategy', () => {
         const strategy = new RednoteStrategy(openai);
 
         await expect(strategy.generate('test')).rejects.toThrow(
-            /webgemini service unavailable/
+            /image generation backend unavailable/
         );
     });
 

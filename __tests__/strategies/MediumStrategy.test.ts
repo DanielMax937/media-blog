@@ -11,6 +11,12 @@ jest.mock('../../lib/services/CoverImageService');
 jest.mock('../../lib/services/BitstripeUploader');
 jest.mock('@anthropic-ai/claude-agent-sdk', () => ({
     query: jest.fn().mockImplementation(async function* () {
+        yield {
+            type: 'assistant',
+            message: {
+                content: [{ type: 'text', text: '<html>demo</html>' }],
+            },
+        };
         yield { type: 'result', subtype: 'success', result: 'done' };
     }),
 }));
@@ -46,6 +52,7 @@ function makeOpenAI(responses: string[]): OpenAI {
 describe('MediumStrategy', () => {
     beforeEach(() => {
         jest.clearAllMocks();
+        delete process.env.MEDIUM_DEMO_PROVIDER;
         mockReplaceSlot.mockImplementation((md: string, _slot: unknown, replacement: string) =>
             md + replacement
         );
@@ -65,7 +72,8 @@ describe('MediumStrategy', () => {
     });
 
     it('skips GIF insertion when no slots found', async () => {
-        const openai = makeOpenAI(['English', 'YES', 'Formatted markdown with code']);
+        process.env.MEDIUM_DEMO_PROVIDER = 'openai';
+        const openai = makeOpenAI(['English', 'YES', '<html>demo</html>', 'Formatted markdown with code']);
         const strategy = new MediumStrategy(openai);
         mockFindSlots.mockResolvedValue([]);
         mockGenerateCover.mockResolvedValue(null);
@@ -76,8 +84,20 @@ describe('MediumStrategy', () => {
         expect(mockPlanSteps).not.toHaveBeenCalled();
     });
 
+    it('defaults to claude for technical demo generation', async () => {
+        const openai = makeOpenAI(['English', 'YES', 'Formatted markdown with code']);
+        const strategy = new MediumStrategy(openai);
+        mockFindSlots.mockResolvedValue([]);
+        mockGenerateCover.mockResolvedValue(null);
+
+        const result = await strategy.generate('Technical article about CSS');
+
+        expect(result.content).toBeTruthy();
+    });
+
     it('generates GIF and embeds URL when slot is found and GIF succeeds', async () => {
-        const openai = makeOpenAI(['English', 'YES', 'Formatted markdown with code', 'Cover prompt']);
+        process.env.MEDIUM_DEMO_PROVIDER = 'openai';
+        const openai = makeOpenAI(['English', 'YES', '<html>demo</html>', 'Formatted markdown with code']);
         const strategy = new MediumStrategy(openai);
 
         mockFindSlots.mockResolvedValue([
@@ -107,7 +127,8 @@ describe('MediumStrategy', () => {
     });
 
     it('skips slot when GIF generation returns null (graceful degradation)', async () => {
-        const openai = makeOpenAI(['English', 'YES', 'Formatted markdown']);
+        process.env.MEDIUM_DEMO_PROVIDER = 'openai';
+        const openai = makeOpenAI(['English', 'YES', '<html>demo</html>', 'Formatted markdown']);
         const strategy = new MediumStrategy(openai);
 
         mockFindSlots.mockResolvedValue([
@@ -125,7 +146,8 @@ describe('MediumStrategy', () => {
     });
 
     it('skips GIF upload failure gracefully', async () => {
-        const openai = makeOpenAI(['English', 'YES', 'Formatted markdown']);
+        process.env.MEDIUM_DEMO_PROVIDER = 'openai';
+        const openai = makeOpenAI(['English', 'YES', '<html>demo</html>', 'Formatted markdown']);
         const strategy = new MediumStrategy(openai);
 
         mockFindSlots.mockResolvedValue([

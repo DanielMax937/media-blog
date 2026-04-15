@@ -118,11 +118,9 @@ export class MediumStrategy implements BlogStrategy {
     }
 
     /**
-     * Generate demo HTML using Claude Agent SDK
-     * The agent can autonomously create and write the demo file
-     * Returns both the demo content and the filename
+     * Generate demo HTML using Claude Agent SDK.
      */
-    private async generateDemoWithAgent(englishContent: string): Promise<{ content: string; filename: string }> {
+    private async generateDemoWithClaude(englishContent: string): Promise<{ content: string; filename: string }> {
         const demosDir = path.join(process.cwd(), 'public', 'demos');
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const filename = `demo-${timestamp}.html`;
@@ -130,7 +128,7 @@ export class MediumStrategy implements BlogStrategy {
 
         const options: Options = {
             allowedTools: ['Write', 'Bash'],
-            systemPrompt: `You are a frontend developer creating an educational demo page. Create a self-contained HTML file that demonstrates concepts from the article in a "code snippet → live showcase" format.
+            systemPrompt: `You are a frontend developer creating an educational demo page. Create a self-contained HTML file that demonstrates concepts from the article in a "code snippet -> live showcase" format.
 
 STRUCTURE REQUIREMENTS:
 - Organize the page as a series of sections, each containing:
@@ -143,7 +141,7 @@ STRUCTURE REQUIREMENTS:
 VISUAL DESIGN:
 - Use a clean, modern design with good typography
 - Code blocks should have syntax highlighting (dark background, colored syntax)
-- Showcases should have a distinct visual container (e.g., dashed border, light background)
+- Showcases should have a distinct visual container
 - Add "Code:" and "Result:" labels to clearly distinguish sections
 
 TECHNICAL REQUIREMENTS:
@@ -157,50 +155,144 @@ After writing, output the complete HTML content.`,
         };
 
         const prompt = `Create a demo for this article and save it to ${filepath}:\n\n${englishContent}`;
-
         let demoContent = '';
 
-        console.log('🤖 Claude Agent generating demo...');
+        logApi('claude', 'MediumStrategy.generateDemo start', {
+            provider: 'claude',
+            filepath,
+            inputChars: englishContent.length,
+        });
 
         for await (const message of query({ prompt, options })) {
             if (message.type === 'assistant') {
-                // Extract text content from assistant message
                 for (const block of message.message.content) {
                     if (block.type === 'text') {
                         demoContent += block.text;
                     }
                 }
-            } else if (message.type === 'result') {
-                if (message.subtype === 'success') {
-                    console.log('📝 Agent completed:', message.result);
-                }
+            } else if (message.type === 'result' && message.subtype === 'success') {
+                console.log('📝 Agent completed:', message.result);
             }
         }
 
-        // If agent wrote the file, read it back; otherwise parse from response
         if (fs.existsSync(filepath)) {
+            const demo = fs.readFileSync(filepath, 'utf-8');
+            logApi('claude', 'MediumStrategy.generateDemo ok', {
+                provider: 'claude',
+                outputChars: demo.length,
+                filepath,
+            });
             console.log('Demo saved by agent to:', filepath);
             console.log('   Accessible at: /demos/' + filename);
-
-            return { content: fs.readFileSync(filepath, 'utf-8'), filename };
+            return { content: demo, filename };
         }
 
-        // Fallback: extract HTML from agent's text response
-        let demo = demoContent;
-        demo = demo.replace(/^```html\n?/g, '').replace(/\n?```$/g, '').trim();
+        let demo = demoContent.replace(/^```html\s*/i, '').replace(/\s*```$/i, '').trim();
+
+        if (!fs.existsSync(demosDir)) {
+            fs.mkdirSync(demosDir, { recursive: true });
+        }
+
+        if (demo) {
+            fs.writeFileSync(filepath, demo, 'utf-8');
+            console.log('Demo saved to:', filepath);
+            console.log('   Accessible at: /demos/' + filename);
+        }
+
+        logApi('claude', 'MediumStrategy.generateDemo ok', {
+            provider: 'claude',
+            outputChars: demo.length,
+            filepath,
+            fallbackTextOutput: true,
+        });
+
+        return { content: demo, filename };
+    }
+
+    /**
+     * Generate demo HTML with OpenAI and persist it locally.
+     */
+    private async generateDemoWithOpenAi(englishContent: string): Promise<{ content: string; filename: string }> {
+        const demosDir = path.join(process.cwd(), 'public', 'demos');
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `demo-${timestamp}.html`;
+        const filepath = path.join(demosDir, filename);
 
         // Ensure demos directory exists
         if (!fs.existsSync(demosDir)) {
             fs.mkdirSync(demosDir, { recursive: true });
         }
 
-        // Write the file manually if agent didn't
+        const demoModel = 'gpt-5.4';
+        const systemPrompt = `You are a frontend developer creating an educational demo page. Return only a complete self-contained HTML document.
+
+STRUCTURE REQUIREMENTS:
+- Organize the page as a series of sections, each containing:
+  1. A heading describing the concept
+  2. The code snippet shown in a <pre><code> block with syntax highlighting
+  3. Immediately followed by a live interactive showcase demonstrating that exact code
+- Use clear visual separation between sections with borders, backgrounds, and spacing
+- Each showcase must directly correspond to the code snippet above it
+
+VISUAL DESIGN:
+- Use a clean, modern design with good typography
+- Code blocks should have syntax highlighting with a dark background
+- Showcases should have a distinct visual container
+- Add "Code:" and "Result:" labels
+
+TECHNICAL REQUIREMENTS:
+- Self-contained HTML with embedded CSS and JavaScript
+- Use modern CSS and semantic HTML
+- Make showcases interactive where useful
+- Ensure code shown in <pre> blocks matches the actual implementation in showcases
+- Do not reference external assets or libraries
+- Return HTML only, no markdown fences or explanation`;
+
+        const userPrompt = `Create a demo page for this article:\n\n${englishContent}`;
+
+        let t0 = Date.now();
+        logApi('openai', 'MediumStrategy.generateDemo start', {
+            model: demoModel,
+            inputChars: englishContent.length,
+        });
+        const demoResponse = await this.openai.chat.completions.create({
+            model: demoModel,
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+            ],
+        });
+        let demo = demoResponse.choices?.[0]?.message?.content || '';
+        logOpenAiRawResponseIfEmpty('MediumStrategy.generateDemo', demo.length, demoResponse);
+        logApi('openai', 'MediumStrategy.generateDemo ok', {
+            model: demoModel,
+            durationMs: Date.now() - t0,
+            outputChars: demo.length,
+        });
+
+        demo = demo.replace(/^```html\s*/i, '').replace(/\s*```$/i, '').trim();
+
         if (demo) {
             fs.writeFileSync(filepath, demo, 'utf-8');
             console.log('Demo saved to:', filepath);
+            console.log('   Accessible at: /demos/' + filename);
         }
 
         return { content: demo, filename };
+    }
+
+    private getDemoProvider(): 'claude' | 'openai' {
+        const raw = process.env.MEDIUM_DEMO_PROVIDER?.trim().toLowerCase();
+        return raw === 'openai' ? 'openai' : 'claude';
+    }
+
+    private async generateDemo(englishContent: string): Promise<{ content: string; filename: string }> {
+        const provider = this.getDemoProvider();
+        logApi('api', 'MediumStrategy.generateDemo provider selected', { provider });
+        if (provider === 'openai') {
+            return this.generateDemoWithOpenAi(englishContent);
+        }
+        return this.generateDemoWithClaude(englishContent);
     }
 
     async generate(content: string): Promise<{ content: string; demo?: string }> {
@@ -257,8 +349,8 @@ After writing, output the complete HTML content.`,
         let demoCodeExamples = '';
 
         if (isTechnical) {
-            // 3. Generate Demo FIRST for technical content using Claude Agent SDK
-            const demoResult = await this.generateDemoWithAgent(englishContent);
+            // 3. Generate demo first for technical content using the configured provider.
+            const demoResult = await this.generateDemo(englishContent);
             demo = demoResult.content;
             demoFilename = demoResult.filename;
 

@@ -4,10 +4,24 @@ import * as path from 'path';
 import * as os from 'os';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from './api-logger';
 import { withWebgeminiConcurrency } from './webgemini-concurrency';
+import {
+    generateImageWithGoogleAi,
+    getImageGenerationBackendName,
+    isGoogleImageGenerationConfigured,
+    isGoogleImageGenerationEnabled,
+} from './GoogleImageService';
 
 const WEBGEMINI_BASE = process.env.WEBGEMINI_URL ?? 'http://127.0.0.1:8200';
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes — long jobs / slow polls
+
+function getSelectedImageBackend() {
+    return {
+        backend: getImageGenerationBackendName(),
+        directEnabled: isGoogleImageGenerationEnabled(),
+        directConfigured: isGoogleImageGenerationConfigured(),
+    };
+}
 
 /** Rednote / XHS: always exactly three slides (cover → content → ending). */
 const XHS_PLAN_IMAGE_COUNT = 3 as const;
@@ -164,6 +178,23 @@ Rules:
  * (webgemini accepts prompt-only multipart — reference images optional.)
  */
 async function generateImage(prompt: string, outPath: string): Promise<void> {
+    if (isGoogleImageGenerationEnabled()) {
+        logApi('genai', 'XhsImage generate submit', {
+            backend: 'google-ai',
+            outFile: path.basename(outPath),
+            promptChars: prompt.length,
+        });
+        await generateImageWithGoogleAi(prompt, outPath, {
+            width: 1024,
+            height: 1365,
+        });
+        logApi('genai', 'XhsImage generate completed', {
+            backend: 'google-ai',
+            outFile: path.basename(outPath),
+        });
+        return;
+    }
+
     await withWebgeminiConcurrency(async () => {
         const formData = new FormData();
         formData.append('prompt', prompt);
@@ -215,16 +246,39 @@ async function generateImage(prompt: string, outPath: string): Promise<void> {
 }
 
 /**
- * Checks if the webgemini local service is reachable.
+ * Checks whether the currently selected image backend is available.
+ * Direct Google AI mode is decided only by env vars, never by webgemini health.
  */
 export async function isWebgeminiAvailable(): Promise<boolean> {
+    const selection = getSelectedImageBackend();
+    logApi('api', 'XhsImage backend selection', selection);
+
+    if (selection.directEnabled) {
+        const ok = selection.directConfigured;
+        logApi('genai', 'XhsImage direct backend config result', {
+            backend: selection.backend,
+            ok,
+        });
+        return ok;
+    }
+
     try {
-        logApi('webgemini', 'GET /health', { base: WEBGEMINI_BASE });
+        logApi('webgemini', 'XhsImage backend health check start', {
+            backend: selection.backend,
+            base: WEBGEMINI_BASE,
+        });
         const res = await fetch(`${WEBGEMINI_BASE}/health`, { signal: AbortSignal.timeout(3000) });
-        logApi('webgemini', 'GET /health result', { ok: res.ok, status: res.status });
+        logApi('webgemini', 'XhsImage backend health check result', {
+            backend: selection.backend,
+            ok: res.ok,
+            status: res.status,
+        });
         return res.ok;
     } catch (err) {
-        logApiError('webgemini', 'GET /health failed', err, { base: WEBGEMINI_BASE });
+        logApiError('webgemini', 'XhsImage backend health check failed', err, {
+            backend: selection.backend,
+            base: WEBGEMINI_BASE,
+        });
         return false;
     }
 }

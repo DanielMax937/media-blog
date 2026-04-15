@@ -1,13 +1,26 @@
 import OpenAI from 'openai';
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from './api-logger';
 import { withWebgeminiConcurrency } from './webgemini-concurrency';
+import {
+    generateImageWithGoogleAi,
+    getImageGenerationBackendName,
+    isGoogleImageGenerationConfigured,
+    isGoogleImageGenerationEnabled,
+} from './GoogleImageService';
 
 const WEBGEMINI_BASE = process.env.WEBGEMINI_URL ?? 'http://127.0.0.1:8200';
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+
+function getSelectedImageBackend() {
+    return {
+        backend: getImageGenerationBackendName(),
+        directEnabled: isGoogleImageGenerationEnabled(),
+        directConfigured: isGoogleImageGenerationConfigured(),
+    };
+}
 
 /**
  * Generates a cover-image prompt from the article markdown using the LLM.
@@ -56,6 +69,23 @@ Include "16:9 aspect ratio, high resolution, professional blog cover, digital il
  * Returns the local PNG path, or null on failure/timeout.
  */
 async function generateCoverFromWebgemini(prompt: string, outPath: string): Promise<boolean> {
+    if (isGoogleImageGenerationEnabled()) {
+        logApi('genai', 'CoverImage generate submit', {
+            backend: 'google-ai',
+            outFile: path.basename(outPath),
+            promptChars: prompt.length,
+        });
+        await generateImageWithGoogleAi(prompt, outPath, {
+            width: 1536,
+            height: 1024,
+        });
+        logApi('genai', 'CoverImage generate completed', {
+            backend: 'google-ai',
+            outFile: path.basename(outPath),
+        });
+        return true;
+    }
+
     return withWebgeminiConcurrency(async () => {
         const formData = new FormData();
         formData.append('prompt', prompt);
@@ -112,16 +142,39 @@ async function generateCoverFromWebgemini(prompt: string, outPath: string): Prom
 }
 
 /**
- * Checks if the webgemini service is reachable (same check as XhsImageService).
+ * Checks whether the currently selected image backend is available.
+ * Direct Google AI mode is decided only by env vars, never by webgemini health.
  */
 async function isWebgeminiAvailable(): Promise<boolean> {
+    const selection = getSelectedImageBackend();
+    logApi('api', 'CoverImage backend selection', selection);
+
+    if (selection.directEnabled) {
+        const ok = selection.directConfigured;
+        logApi('genai', 'CoverImage direct backend config result', {
+            backend: selection.backend,
+            ok,
+        });
+        return ok;
+    }
+
     try {
-        logApi('webgemini', 'CoverImage GET /health', { base: WEBGEMINI_BASE });
+        logApi('webgemini', 'CoverImage backend health check start', {
+            backend: selection.backend,
+            base: WEBGEMINI_BASE,
+        });
         const res = await fetch(`${WEBGEMINI_BASE}/health`, { signal: AbortSignal.timeout(3000) });
-        logApi('webgemini', 'CoverImage GET /health result', { ok: res.ok, status: res.status });
+        logApi('webgemini', 'CoverImage backend health check result', {
+            backend: selection.backend,
+            ok: res.ok,
+            status: res.status,
+        });
         return res.ok;
     } catch (err) {
-        logApiError('webgemini', 'CoverImage GET /health failed', err, { base: WEBGEMINI_BASE });
+        logApiError('webgemini', 'CoverImage backend health check failed', err, {
+            backend: selection.backend,
+            base: WEBGEMINI_BASE,
+        });
         return false;
     }
 }
@@ -139,8 +192,11 @@ export async function generateCoverImage(
     openai: OpenAI,
     outputDir: string
 ): Promise<string | null> {
-    if (!(await isWebgeminiAvailable())) {
-        console.log('[CoverImageService] webgemini unavailable, skipping cover generation');
+    const backendAvailable = await isWebgeminiAvailable();
+    const selection = getSelectedImageBackend();
+    if (!backendAvailable) {
+        logApi('api', 'CoverImage backend unavailable, skipping generation', selection);
+        console.log(`[CoverImageService] ${selection.backend} unavailable, skipping cover generation`);
         return null;
     }
 

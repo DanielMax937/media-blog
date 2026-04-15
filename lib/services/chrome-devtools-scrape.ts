@@ -38,6 +38,16 @@ const DEFAULT_V2EX_JOBS_POST_WAIT_MS = 3_000;
 
 /** Relative to `process.cwd()`; under `/data/` (gitignored). */
 const V2EX_DEBUG_HTML_FILE = path.join('data', 'debug', 'v2ex-jobs-last.html');
+const FORCE_PLAYWRIGHT_SCRAPE_ENV = 'FORCE_PLAYWRIGHT_SCRAPE';
+
+function isTruthy(value: string | undefined): boolean {
+    if (!value) return false;
+    return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
+function shouldForcePlaywright(): boolean {
+    return isTruthy(process.env[FORCE_PLAYWRIGHT_SCRAPE_ENV]);
+}
 
 function shouldWriteV2exDebugHtml(): boolean {
     if (process.env.NODE_ENV === 'test') return false;
@@ -73,6 +83,129 @@ function envMs(key: string, fallback: number): number {
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) return fallback;
     return Math.floor(n);
+}
+
+function isChromeDevtoolsUnavailableError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err);
+    return (
+        message.includes('Chrome DevTools MCP') ||
+        message.includes('ECONNREFUSED') ||
+        message.includes('fetch failed') ||
+        message.includes('connect ECONNREFUSED') ||
+        message.includes('connect EPERM')
+    );
+}
+
+async function scrapeUrlBodyTextViaPlaywright(url: string): Promise<string> {
+    const { chromium } = await import('playwright');
+    const navTimeout = envMs('PW_NAVIGATION_TIMEOUT_MS', DEFAULT_NAV_TIMEOUT_MS);
+    const browser = await chromium.launch({ headless: false });
+    const page = await browser.newPage();
+
+    try {
+        page.setDefaultNavigationTimeout(navTimeout);
+        page.setDefaultTimeout(navTimeout);
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeout });
+        await page.waitForLoadState('networkidle', { timeout: Math.min(navTimeout, 30_000) }).catch(() => {
+            /* tolerate slow long-polling pages */
+        });
+        const text = await page.evaluate(() => document.body?.innerText ?? '');
+        return text;
+    } finally {
+        await page.close().catch(() => {});
+        await browser.close().catch(() => {});
+    }
+}
+
+async function listV2exJobsTabCountLividTopicUrlsViaPlaywright(jobsTabUrl: string): Promise<string[]> {
+    const { chromium } = await import('playwright');
+    const navTimeout = envMs('PW_NAVIGATION_TIMEOUT_MS', DEFAULT_NAV_TIMEOUT_MS);
+    const postWaitMs = envMs('CDS_V2EX_JOBS_POST_WAIT_MS', DEFAULT_V2EX_JOBS_POST_WAIT_MS);
+    const browser = await chromium.launch({ headless: false });
+    const page = await browser.newPage();
+
+    try {
+        page.setDefaultNavigationTimeout(navTimeout);
+        page.setDefaultTimeout(navTimeout);
+        await page.goto(jobsTabUrl, { waitUntil: 'domcontentloaded', timeout: navTimeout });
+        await page.waitForLoadState('networkidle', { timeout: Math.min(navTimeout, 30_000) }).catch(() => {});
+        if (postWaitMs > 0) {
+            await page.waitForTimeout(postWaitMs);
+        }
+        return await page.evaluate(() => {
+            const seen = new Set<string>();
+            const out: string[] = [];
+            const base = 'https://www.v2ex.com';
+            for (const cell of document.querySelectorAll('#Main .cell.item')) {
+                const a = cell.querySelector('a.count_livid') as HTMLAnchorElement | null;
+                if (!a || !a.href) continue;
+                try {
+                    const u = new URL(a.getAttribute('href') || a.href, base);
+                    if (!u.pathname.startsWith('/t/')) continue;
+                    u.hash = '';
+                    const canonical = u.href;
+                    if (!seen.has(canonical)) {
+                        seen.add(canonical);
+                        out.push(canonical);
+                    }
+                } catch {
+                    /* ignore malformed links */
+                }
+            }
+            return out;
+        });
+    } finally {
+        await page.close().catch(() => {});
+        await browser.close().catch(() => {});
+    }
+}
+
+async function listZhangxinxuCategoryArticleUrlsViaPlaywright(categoryUrl: string): Promise<string[]> {
+    const { chromium } = await import('playwright');
+    const navTimeout = envMs('PW_NAVIGATION_TIMEOUT_MS', DEFAULT_NAV_TIMEOUT_MS);
+    const browser = await chromium.launch({ headless: false });
+    const page = await browser.newPage();
+
+    try {
+        page.setDefaultNavigationTimeout(navTimeout);
+        page.setDefaultTimeout(navTimeout);
+        await page.goto(categoryUrl, { waitUntil: 'domcontentloaded', timeout: navTimeout });
+        await page.waitForLoadState('networkidle', { timeout: Math.min(navTimeout, 30_000) }).catch(() => {});
+        return await page.evaluate(() => {
+            const seen = new Set<string>();
+            const out: string[] = [];
+            const selectors = [
+                'a[rel="bookmark"]',
+                '.entry-title a',
+                'article h2 a',
+                '.post h2 a',
+                'h2 a[rel="bookmark"]',
+            ];
+            const anchors = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)));
+            for (const anchor of anchors) {
+                const a = anchor as HTMLAnchorElement;
+                const href = (a.getAttribute('href') || a.href || '').trim();
+                if (!href) continue;
+                try {
+                    const u = new URL(href, location.href);
+                    if (!/^https:\/\/www\.zhangxinxu\.com\/wordpress\/\d{4}\/\d{2}\//.test(u.href)) continue;
+                    u.hash = '';
+                    u.search = '';
+                    const canonical = u.href;
+                    if (!seen.has(canonical)) {
+                        seen.add(canonical);
+                        out.push(canonical);
+                    }
+                } catch {
+                    /* ignore malformed links */
+                }
+            }
+            return out;
+        });
+    } finally {
+        await page.close().catch(() => {});
+        await browser.close().catch(() => {});
+    }
 }
 
 async function cdsPost(
@@ -163,59 +296,74 @@ function parseEvaluateResultText(res: CdsToolResponse): string {
  * Opens URL in a new tab via MCP, returns `document.body.innerText`, best-effort closes the tab.
  */
 export async function scrapeUrlBodyText(url: string): Promise<string> {
-    const navTimeout = envMs('CDS_NAVIGATION_TIMEOUT_MS', DEFAULT_NAV_TIMEOUT_MS);
-    const buffer = envMs('CDS_NEW_PAGE_HTTP_BUFFER_MS', DEFAULT_NEW_PAGE_HTTP_BUFFER_MS);
-    const newPageHttpTimeout = envMs(
-        'CDS_NEW_PAGE_HTTP_TIMEOUT_MS',
-        navTimeout + buffer,
-    );
-    const evalTimeout = envMs('CDS_EVAL_HTTP_TIMEOUT_MS', DEFAULT_EVAL_HTTP_TIMEOUT_MS);
-    const listTimeout = envMs('CDS_LIST_HTTP_TIMEOUT_MS', DEFAULT_LIST_HTTP_TIMEOUT_MS);
-    const closeTimeout = envMs('CDS_CLOSE_HTTP_TIMEOUT_MS', DEFAULT_CLOSE_HTTP_TIMEOUT_MS);
-    const selectTimeout = envMs('CDS_SELECT_HTTP_TIMEOUT_MS', DEFAULT_SELECT_HTTP_TIMEOUT_MS);
-
-    const nav = await cdsPost('/api/new_page', { url, timeout: navTimeout }, newPageHttpTimeout);
-    if (nav.is_error) {
-        throw new Error(firstTextBlock(nav) || 'new_page failed');
+    if (shouldForcePlaywright()) {
+        logApi('browser', 'scrapeUrlBodyText forced to playwright headed', { url });
+        return await scrapeUrlBodyTextViaPlaywright(url);
     }
 
-    let pageId = parsePageIdFromToolText(firstTextBlock(nav));
-    if (pageId == null) {
-        try {
-            const list = await cdsPost('/api/list_pages', {}, listTimeout);
-            if (!list.is_error) pageId = parsePageIdFromToolText(firstTextBlock(list));
-        } catch {
-            /* ignore */
+    try {
+        const navTimeout = envMs('CDS_NAVIGATION_TIMEOUT_MS', DEFAULT_NAV_TIMEOUT_MS);
+        const buffer = envMs('CDS_NEW_PAGE_HTTP_BUFFER_MS', DEFAULT_NEW_PAGE_HTTP_BUFFER_MS);
+        const newPageHttpTimeout = envMs(
+            'CDS_NEW_PAGE_HTTP_TIMEOUT_MS',
+            navTimeout + buffer,
+        );
+        const evalTimeout = envMs('CDS_EVAL_HTTP_TIMEOUT_MS', DEFAULT_EVAL_HTTP_TIMEOUT_MS);
+        const listTimeout = envMs('CDS_LIST_HTTP_TIMEOUT_MS', DEFAULT_LIST_HTTP_TIMEOUT_MS);
+        const closeTimeout = envMs('CDS_CLOSE_HTTP_TIMEOUT_MS', DEFAULT_CLOSE_HTTP_TIMEOUT_MS);
+        const selectTimeout = envMs('CDS_SELECT_HTTP_TIMEOUT_MS', DEFAULT_SELECT_HTTP_TIMEOUT_MS);
+
+        const nav = await cdsPost('/api/new_page', { url, timeout: navTimeout }, newPageHttpTimeout);
+        if (nav.is_error) {
+            throw new Error(firstTextBlock(nav) || 'new_page failed');
         }
-    }
-    if (pageId != null) {
-        await selectPageById(pageId, selectTimeout);
-    }
 
-    const evalRes = await cdsPost(
-        '/api/evaluate_script',
-        {
-            function: `() => {
+        let pageId = parsePageIdFromToolText(firstTextBlock(nav));
+        if (pageId == null) {
+            try {
+                const list = await cdsPost('/api/list_pages', {}, listTimeout);
+                if (!list.is_error) pageId = parsePageIdFromToolText(firstTextBlock(list));
+            } catch {
+                /* ignore */
+            }
+        }
+        if (pageId != null) {
+            await selectPageById(pageId, selectTimeout);
+        }
+
+        const evalRes = await cdsPost(
+            '/api/evaluate_script',
+            {
+                function: `() => {
           const el = document.body;
           return el ? el.innerText : '';
         }`,
-        },
-        evalTimeout,
-    );
-    const bodyText = parseEvaluateResultText(evalRes);
+            },
+            evalTimeout,
+        );
+        const bodyText = parseEvaluateResultText(evalRes);
 
-    if (pageId != null) {
-        try {
-            const close = await cdsPost('/api/close_page', { pageId }, closeTimeout);
-            if (close.is_error) {
-                console.warn('[chrome-devtools-scrape] close_page failed:', firstTextBlock(close).slice(0, 200));
+        if (pageId != null) {
+            try {
+                const close = await cdsPost('/api/close_page', { pageId }, closeTimeout);
+                if (close.is_error) {
+                    console.warn('[chrome-devtools-scrape] close_page failed:', firstTextBlock(close).slice(0, 200));
+                }
+            } catch (e) {
+                console.warn('[chrome-devtools-scrape] close_page error:', e);
             }
-        } catch (e) {
-            console.warn('[chrome-devtools-scrape] close_page error:', e);
         }
-    }
 
-    return bodyText;
+        return bodyText;
+    } catch (err) {
+        if (!isChromeDevtoolsUnavailableError(err)) throw err;
+
+        logApi('browser', 'scrapeUrlBodyText fallback to playwright headed', {
+            url,
+            reason: err instanceof Error ? err.message.slice(0, 240) : String(err).slice(0, 240),
+        });
+        return await scrapeUrlBodyTextViaPlaywright(url);
+    }
 }
 
 const V2EX_JOBS_DEFAULT_URL = 'https://www.v2ex.com/?tab=jobs';
@@ -227,6 +375,12 @@ const V2EX_JOBS_DEFAULT_URL = 'https://www.v2ex.com/?tab=jobs';
 export async function listV2exJobsTabCountLividTopicUrls(
     jobsTabUrl: string = V2EX_JOBS_DEFAULT_URL,
 ): Promise<string[]> {
+    if (shouldForcePlaywright()) {
+        logApi('browser', 'listV2exJobsTabCountLividTopicUrls forced to playwright headed', { url: jobsTabUrl });
+        return await listV2exJobsTabCountLividTopicUrlsViaPlaywright(jobsTabUrl);
+    }
+
+    try {
     const navTimeout = envMs('CDS_NAVIGATION_TIMEOUT_MS', DEFAULT_NAV_TIMEOUT_MS);
     const buffer = envMs('CDS_NEW_PAGE_HTTP_BUFFER_MS', DEFAULT_NEW_PAGE_HTTP_BUFFER_MS);
     const newPageHttpTimeout = envMs(
@@ -387,6 +541,15 @@ export async function listV2exJobsTabCountLividTopicUrls(
         /* fall through */
     }
     return [];
+    } catch (err) {
+        if (!isChromeDevtoolsUnavailableError(err)) throw err;
+
+        logApi('browser', 'listV2exJobsTabCountLividTopicUrls fallback to playwright headed', {
+            url: jobsTabUrl,
+            reason: err instanceof Error ? err.message.slice(0, 240) : String(err).slice(0, 240),
+        });
+        return await listV2exJobsTabCountLividTopicUrlsViaPlaywright(jobsTabUrl);
+    }
 }
 
 const ZHANGXINXU_CATEGORY_JS_URL = 'https://www.zhangxinxu.com/wordpress/category/js/';
@@ -421,6 +584,12 @@ function extractZhangxinxuArticleUrlsFromHtml(html: string): string[] {
 export async function listZhangxinxuCategoryArticleUrls(
     categoryUrl: string = ZHANGXINXU_CATEGORY_JS_URL,
 ): Promise<string[]> {
+    if (shouldForcePlaywright()) {
+        logApi('browser', 'listZhangxinxuCategoryArticleUrls forced to playwright headed', { url: categoryUrl });
+        return await listZhangxinxuCategoryArticleUrlsViaPlaywright(categoryUrl);
+    }
+
+    try {
     const navTimeout = envMs('CDS_NAVIGATION_TIMEOUT_MS', DEFAULT_NAV_TIMEOUT_MS);
     const buffer = envMs('CDS_NEW_PAGE_HTTP_BUFFER_MS', DEFAULT_NEW_PAGE_HTTP_BUFFER_MS);
     const newPageHttpTimeout = envMs('CDS_NEW_PAGE_HTTP_TIMEOUT_MS', navTimeout + buffer);
@@ -537,6 +706,15 @@ export async function listZhangxinxuCategoryArticleUrls(
         /* fall through */
     }
     return [];
+    } catch (err) {
+        if (!isChromeDevtoolsUnavailableError(err)) throw err;
+
+        logApi('browser', 'listZhangxinxuCategoryArticleUrls fallback to playwright headed', {
+            url: categoryUrl,
+            reason: err instanceof Error ? err.message.slice(0, 240) : String(err).slice(0, 240),
+        });
+        return await listZhangxinxuCategoryArticleUrlsViaPlaywright(categoryUrl);
+    }
 }
 
 export function getChromeDevToolsBaseUrl(): string {

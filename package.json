@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.76",
+    "@google/genai": "^1.50.0",
     "better-sqlite3": "^12.8.0",
     "next": "16.0.3",
     "openai": "^6.9.1",
@@ -22,6 +23,7 @@
     "rrweb": "^2.0.0-alpha.4",
     "rrweb-player": "^1.0.0-alpha.4",
     "ssh2-sftp-client": "^12.0.1",
+    "undici": "^8.1.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {
