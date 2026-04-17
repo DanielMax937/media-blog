@@ -5,6 +5,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import { chromium } from 'playwright';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from './api-logger';
+import { chatWithFallback } from '../llm-fallback';
 
 // Resolve node_modules bundles using process.cwd() (compatible with both ESM and CJS/Jest)
 const NODE_MODULES = path.join(process.cwd(), 'node_modules');
@@ -72,7 +73,7 @@ Rules:
         demoHtmlChars: demoHtml.length,
     });
     try {
-        const response = await openai.chat.completions.create({
+        const response = await chatWithFallback(openai, {
             model,
             response_format: { type: 'json_object' },
             messages: [

@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from './api-logger';
+import { chatWithFallback } from '../llm-fallback';
 
 export interface DemoInsertionSlot {
     /** The exact placeholder text to replace in the markdown */
@@ -86,7 +87,7 @@ Rules:
         markdownChars: markdown.length,
     });
     try {
-        const response = await openai.chat.completions.create({
+        const response = await chatWithFallback(openai, {
             model,
             response_format: { type: 'json_object' },
             messages: [

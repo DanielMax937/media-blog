@@ -10,6 +10,7 @@ import {
     isGoogleImageGenerationConfigured,
     isGoogleImageGenerationEnabled,
 } from './GoogleImageService';
+import { chatWithFallback } from '../llm-fallback';
 
 const WEBGEMINI_BASE = process.env.WEBGEMINI_URL ?? 'http://127.0.0.1:8200';
 const POLL_INTERVAL_MS = 5000;
@@ -138,7 +139,7 @@ Rules:
             attempt: extraInstruction ? 'retry' : 'first',
             markdownChars: markdown.length,
         });
-        const resp = await openai.chat.completions.create({
+        const resp = await chatWithFallback(openai, {
             model,
             messages,
             max_tokens: 2048,

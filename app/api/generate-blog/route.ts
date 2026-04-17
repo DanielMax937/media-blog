@@ -4,6 +4,7 @@ import { StrategyFactory } from '@/lib/strategies/StrategyFactory'
 import { scrapeUrlBodyText } from '@/lib/services/chrome-devtools-scrape'
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from '@/lib/services/api-logger'
 import { getOpenAiBaseUrl } from '@/lib/openai-base-url'
+import { chatWithFallback } from '@/lib/llm-fallback'
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
@@ -48,7 +49,7 @@ export async function POST(request: Request) {
         const model = process.env.OPENAI_MODEL ?? 'gpt-5.4'
         const tLlm = Date.now()
         logApi('openai', 'generate-blog.extractMainContent start', { model, inputChars: content.length })
-        const extractionResponse = await openai.chat.completions.create({
+        const extractionResponse = await chatWithFallback(openai, {
             model,
             messages: [
                 {

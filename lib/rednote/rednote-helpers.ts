@@ -5,6 +5,7 @@ import fs from 'fs';
 import { scrapeUrlBodyText } from '@/lib/services/chrome-devtools-scrape';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from '@/lib/services/api-logger';
 import { uploadToBitstripe } from '@/lib/services/BitstripeUploader';
+import { chatWithFallback } from '@/lib/llm-fallback';
 
 export async function scrapeUrl(url: string): Promise<string> {
     logApi('browser', 'rednote.scrapeUrl start', { url });
@@ -29,7 +30,7 @@ export async function extractMainContent(openai: OpenAI, raw: string): Promise<s
     const t0 = Date.now();
     logApi('openai', 'rednote.extractMainContent start', { model, inputChars: raw.length });
     try {
-        const response = await openai.chat.completions.create({
+        const response = await chatWithFallback(openai, {
             model,
             messages: [
                 {

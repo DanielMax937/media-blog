@@ -9,6 +9,7 @@ import { findDemoInsertionSlots, replaceSlotInMarkdown } from '../services/Markd
 import { planInteractionSteps, generateGifForDemo } from '../services/DemoGifService';
 import { generateCoverImage } from '../services/CoverImageService';
 import { logApi, logOpenAiRawResponseIfEmpty } from '../services/api-logger';
+import { chatWithFallback, getFallbackOpenAI, FALLBACK_OPENAI_MODEL, FALLBACK_ANTHROPIC_API_KEY, FALLBACK_ANTHROPIC_BASE_URL, FALLBACK_ANTHROPIC_MODEL } from '../llm-fallback';
 
 export class MediumStrategy implements BlogStrategy {
     private openai: OpenAI;
@@ -118,7 +119,7 @@ export class MediumStrategy implements BlogStrategy {
     }
 
     /**
-     * Generate demo HTML using Claude Agent SDK.
+     * Generate demo HTML using Claude Agent SDK, with DeepSeek as fallback.
      */
     private async generateDemoWithClaude(englishContent: string): Promise<{ content: string; filename: string }> {
         const demosDir = path.join(process.cwd(), 'public', 'demos');
@@ -128,6 +129,7 @@ export class MediumStrategy implements BlogStrategy {
 
         const options: Options = {
             allowedTools: ['Write', 'Bash'],
+            model: process.env.MODEL_ID,
             systemPrompt: `You are a frontend developer creating an educational demo page. Create a self-contained HTML file that demonstrates concepts from the article in a "code snippet -> live showcase" format.
 
 STRUCTURE REQUIREMENTS:
@@ -163,16 +165,26 @@ After writing, output the complete HTML content.`,
             inputChars: englishContent.length,
         });
 
-        for await (const message of query({ prompt, options })) {
-            if (message.type === 'assistant') {
-                for (const block of message.message.content) {
-                    if (block.type === 'text') {
-                        demoContent += block.text;
+        try {
+            for await (const message of query({ prompt, options })) {
+                if (message.type === 'assistant') {
+                    for (const block of message.message.content) {
+                        if (block.type === 'text') {
+                            demoContent += block.text;
+                        }
                     }
+                } else if (message.type === 'result' && message.subtype === 'success') {
+                    console.log('📝 Agent completed:', message.result);
                 }
-            } else if (message.type === 'result' && message.subtype === 'success') {
-                console.log('📝 Agent completed:', message.result);
             }
+        } catch (claudeErr) {
+            console.warn('[MediumStrategy] Claude failed, falling back to DeepSeek:', claudeErr);
+            logApi('claude', 'MediumStrategy.generateDemo fallback to deepseek', {
+                error: String(claudeErr),
+                filepath,
+            });
+            // Fall back to OpenAI-compatible deepseek endpoint
+            return this.generateDemoWithOpenAi(englishContent, getFallbackOpenAI(), FALLBACK_ANTHROPIC_MODEL);
         }
 
         if (fs.existsSync(filepath)) {
@@ -211,8 +223,13 @@ After writing, output the complete HTML content.`,
 
     /**
      * Generate demo HTML with OpenAI and persist it locally.
+     * Accepts an optional openaiClient and model override for fallback use.
      */
-    private async generateDemoWithOpenAi(englishContent: string): Promise<{ content: string; filename: string }> {
+    private async generateDemoWithOpenAi(
+        englishContent: string,
+        openaiClient?: OpenAI,
+        modelOverride?: string
+    ): Promise<{ content: string; filename: string }> {
         const demosDir = path.join(process.cwd(), 'public', 'demos');
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const filename = `demo-${timestamp}.html`;
@@ -223,7 +240,8 @@ After writing, output the complete HTML content.`,
             fs.mkdirSync(demosDir, { recursive: true });
         }
 
-        const demoModel = 'gpt-5.4';
+        const client = openaiClient ?? this.openai;
+        const demoModel = modelOverride ?? 'gpt-5.4';
         const systemPrompt = `You are a frontend developer creating an educational demo page. Return only a complete self-contained HTML document.
 
 STRUCTURE REQUIREMENTS:
@@ -255,7 +273,7 @@ TECHNICAL REQUIREMENTS:
             model: demoModel,
             inputChars: englishContent.length,
         });
-        const demoResponse = await this.openai.chat.completions.create({
+        const demoResponse = await chatWithFallback(client, {
             model: demoModel,
             messages: [
                 { role: 'system', content: systemPrompt },
@@ -299,7 +317,7 @@ TECHNICAL REQUIREMENTS:
         const model = process.env.OPENAI_MODEL ?? 'gpt-5.4';
         let t0 = Date.now();
         logApi('openai', 'MediumStrategy.translate start', { model, inputChars: content.length });
-        const translateResponse = await this.openai.chat.completions.create({
+        const translateResponse = await chatWithFallback(this.openai, {
             model,
             messages: [
                 {
@@ -322,7 +340,7 @@ TECHNICAL REQUIREMENTS:
 
         t0 = Date.now();
         logApi('openai', 'MediumStrategy.detectTechnical start', { model });
-        const detectResponse = await this.openai.chat.completions.create({
+        const detectResponse = await chatWithFallback(this.openai, {
             model,
             messages: [
                 {
@@ -364,7 +382,7 @@ TECHNICAL REQUIREMENTS:
             isTechnical: !!isTechnical,
             englishChars: englishContent.length,
         });
-        const formatResponse = await this.openai.chat.completions.create({
+        const formatResponse = await chatWithFallback(this.openai, {
             model,
             messages: [
                 {

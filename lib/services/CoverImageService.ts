@@ -9,6 +9,7 @@ import {
     isGoogleImageGenerationConfigured,
     isGoogleImageGenerationEnabled,
 } from './GoogleImageService';
+import { chatWithFallback } from '../llm-fallback';
 
 const WEBGEMINI_BASE = process.env.WEBGEMINI_URL ?? 'http://127.0.0.1:8200';
 const POLL_INTERVAL_MS = 5000;
@@ -35,7 +36,7 @@ Include "16:9 aspect ratio, high resolution, professional blog cover, digital il
     const t0 = Date.now();
     logApi('openai', 'CoverImageService.generateCoverPrompt start', { model, markdownChars: markdown.length });
     try {
-        const response = await openai.chat.completions.create({
+        const response = await chatWithFallback(openai, {
             model,
             messages: [
                 { role: 'system', content: systemPrompt },

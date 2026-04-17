@@ -1,0 +1,37 @@
+model = "gpt-5.4"
+model_reasoning_effort = "medium"
+
+# Set the default model and provider
+# Configure the custom provider
+model_provider = "proxy"
+
+[model_providers.proxy]
+name = "qiji"
+base_url = "https://openai-proxy.miracleplus.com/v1"
+env_key = "OPENAI_API_KEY" # Name of the environment variable holding your API key
+
+[projects."/Users/daniel/Desktop/git/agent-hub"]
+trust_level = "trusted"
+
+[projects."/Users/daniel/Desktop/git/game-warrier"]
+trust_level = "trusted"
+
+[projects."/Users/daniel/Desktop/git/python_house"]
+trust_level = "trusted"
+
+[projects."/Users/daniel/Desktop/git/poly-sdk-web"]
+trust_level = "trusted"
+
+[projects."/Users/daniel/Desktop/git/round-table"]
+trust_level = "trusted"
+
+[projects."/Users/daniel/Desktop/futures"]
+trust_level = "trusted"
+
+[projects."/Users/caoxiaopeng/Desktop/git/douyin-crawler"]
+trust_level = "trusted"
+
+[notice.model_migrations]
+"gpt-5.2" = "gpt-5.2-codex"
+"gpt-5.1" = "gpt-5.2-codex"
+"gpt-5.3-codex" = "gpt-5.4"
