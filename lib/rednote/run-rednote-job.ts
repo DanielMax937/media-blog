@@ -6,6 +6,7 @@ import {
     logGeneration,
     updateRednoteJob,
 } from '@/lib/services/SqliteService';
+import { sendJobNotification } from '@/lib/services/TelegramService';
 import { extractMainContent, scrapeUrl, writeMdAndUpload } from '@/lib/rednote/rednote-helpers';
 
 const openai = new OpenAI({
@@ -26,12 +27,14 @@ export async function runRednoteJob(jobId: string, requestUrl: string): Promise<
             const err = 'Failed to extract content from URL';
             updateRednoteJob(jobId, { status: 'failed', error: err });
             logApi('api', 'rednote job scrape empty body', { jobId, url: requestUrl });
+            await notifyRednoteFailure(jobId, requestUrl, err);
             return;
         }
 
         const mainContent = await extractMainContent(openai, rawContent);
         const strategy = new RednoteStrategy(openai);
         const { content: markdown, imageUrls = [] } = await strategy.generate(mainContent);
+        const artifactUrls = (typeof markdown === 'string') ? Array.from(new Set((markdown.match(/https?:\/\/[^\s)\]\">]+/g) || []))) : [];
         const mdUrl = await writeMdAndUpload(markdown, 'rednote');
         // Persist source URL + md + image URLs to SQLite `generation_log` (and link from `rednote_job`).
         const generationLogId = logGeneration(requestUrl, mdUrl, imageUrls, 'rednote');
@@ -52,10 +55,60 @@ export async function runRednoteJob(jobId: string, requestUrl: string): Promise<
             markdownChars: markdown.length,
             generationLogId,
         });
+        await notifyRednoteCompletion(jobId, requestUrl, mdUrl, imageUrls, artifactUrls);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error('[runRednoteJob]', jobId, error);
         updateRednoteJob(jobId, { status: 'failed', error: message });
         logApiError('api', 'rednote job failed', error, { jobId, url: requestUrl });
+        await notifyRednoteFailure(jobId, requestUrl, message);
+    }
+}
+
+async function notifyRednoteCompletion(
+    jobId: string,
+    requestUrl: string,
+    mdUrl: string,
+    imageUrls: string[],
+    artifactUrls: string[],
+): Promise<void> {
+    try {
+        await sendJobNotification({
+            platform: 'rednote',
+            status: 'completed',
+            jobId,
+            sourceUrl: requestUrl,
+            mdUrl,
+            imageUrls,
+            artifactUrls,
+        });
+    } catch (error) {
+        logApiError('api', 'rednote completion notification failed', error, {
+            jobId,
+            url: requestUrl,
+            mdUrl,
+        });
+    }
+}
+
+async function notifyRednoteFailure(
+    jobId: string,
+    requestUrl: string,
+    message: string,
+): Promise<void> {
+    try {
+        await sendJobNotification({
+            platform: 'rednote',
+            status: 'failed',
+            jobId,
+            sourceUrl: requestUrl,
+            error: message,
+        });
+    } catch (error) {
+        logApiError('api', 'rednote failure notification failed', error, {
+            jobId,
+            url: requestUrl,
+            error: message,
+        });
     }
 }

@@ -45,14 +45,15 @@ describe('RednoteStrategy', () => {
         expect(result.content).toBe('# 测试文案\n\n内容');
     });
 
-    it('throws when webgemini is unavailable (images are required)', async () => {
+    it('returns text-only markdown when webgemini is unavailable (like Medium without cover)', async () => {
         mockIsWebgeminiAvailable.mockResolvedValue(false);
         const openai = makeOpenAI('# 文章');
         const strategy = new RednoteStrategy(openai);
 
-        await expect(strategy.generate('test')).rejects.toThrow(
-            /image generation backend unavailable/
-        );
+        const result = await strategy.generate('test');
+
+        expect(result.content).toBe('# 文章');
+        expect(result.imageUrls).toEqual([]);
     });
 
     it('generates images and uploads when webgemini is available', async () => {
@@ -141,7 +142,7 @@ describe('RednoteStrategy', () => {
         ]);
     });
 
-    it('throws when ALL image uploads fail', async () => {
+    it('returns text-only markdown when ALL image uploads fail', async () => {
         mockIsWebgeminiAvailable.mockResolvedValue(true);
         mockPlanXhsImages.mockResolvedValue({
             slug: 'fail-all',
@@ -157,18 +158,22 @@ describe('RednoteStrategy', () => {
         const openai = makeOpenAI('# 文章');
         const strategy = new RednoteStrategy(openai);
 
-        await expect(strategy.generate('content')).rejects.toThrow(
-            /All image uploads failed/
-        );
+        const result = await strategy.generate('content');
+
+        expect(result.content).toBe('# 文章');
+        expect(result.imageUrls).toEqual([]);
     });
 
-    it('throws when image generation pipeline fails', async () => {
+    it('returns text-only markdown when image plan fails (e.g. OpenAI rate limit)', async () => {
         mockIsWebgeminiAvailable.mockResolvedValue(true);
         mockPlanXhsImages.mockRejectedValue(new Error('OpenAI rate limit'));
 
         const openai = makeOpenAI('# 文章');
         const strategy = new RednoteStrategy(openai);
 
-        await expect(strategy.generate('content')).rejects.toThrow('OpenAI rate limit');
+        const result = await strategy.generate('content');
+
+        expect(result.content).toBe('# 文章');
+        expect(result.imageUrls).toEqual([]);
     });
 });

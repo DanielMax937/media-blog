@@ -4,6 +4,7 @@ import { isWebgeminiAvailable, planXhsImages, generateXhsImages } from '../servi
 import { uploadToBitstripe } from '../services/BitstripeUploader';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from '../services/api-logger';
 import { getImageGenerationBackendName } from '../services/GoogleImageService';
+import { chatWithFallback } from '../llm-fallback';
 
 export class RednoteStrategy implements BlogStrategy {
     private openai: OpenAI;
@@ -18,7 +19,7 @@ export class RednoteStrategy implements BlogStrategy {
         logApi('openai', 'RednoteStrategy.styleMarkdown start', { model, inputChars: content.length });
         let markdown = '';
         try {
-            const styleResponse = await this.openai.chat.completions.create({
+            const styleResponse = await chatWithFallback(this.openai, {
                 model,
                 messages: [
                     {
@@ -59,8 +60,19 @@ export class RednoteStrategy implements BlogStrategy {
             throw err;
         }
 
-        // Step 2: Generate XHS images and upload to BitStripe
-        const imageUrls = await this.generateAndUploadImages(markdown);
+        // Step 2: XHS images (webgemini / uploads) — best-effort, same idea as Medium cover:
+        // if the image pipeline fails, still return styled markdown and empty imageUrls.
+        let imageUrls: string[] = [];
+        try {
+            imageUrls = await this.generateAndUploadImages(markdown);
+        } catch (err) {
+            logApiError(
+                'api',
+                'RednoteStrategy: XHS / webgemini pipeline failed; continuing with text-only markdown',
+                err,
+                { markdownChars: markdown.length },
+            );
+        }
 
         return { content: markdown, imageUrls };
     }
@@ -76,10 +88,10 @@ export class RednoteStrategy implements BlogStrategy {
             ok: available,
         });
         if (!available) {
-            throw new Error(
-                `[RednoteStrategy] ${backend} image generation backend unavailable — ` +
-                'XHS image generation is required for Xiaohongshu posts'
-            );
+            logApi('api', 'RednoteStrategy: image backend unavailable; skipping XHS images', {
+                backend,
+            });
+            return [];
         }
 
         const plan = await planXhsImages(this.openai, markdown);
@@ -107,7 +119,10 @@ export class RednoteStrategy implements BlogStrategy {
         }
 
         if (urls.length === 0) {
-            throw new Error('[RednoteStrategy] All image uploads failed — no image URLs available');
+            logApi('api', 'RednoteStrategy: all image uploads failed; continuing without image URLs', {
+                localPathCount: localPaths.length,
+            });
+            return [];
         }
 
         return urls;

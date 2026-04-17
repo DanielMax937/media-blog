@@ -6,6 +6,7 @@ import {
     logGeneration,
     updateMediumJob,
 } from '@/lib/services/SqliteService';
+import { sendJobNotification } from '@/lib/services/TelegramService';
 import { extractMainContent, scrapeUrl, writeMdAndUpload } from '@/lib/rednote/rednote-helpers';
 
 const openai = new OpenAI({
@@ -27,6 +28,20 @@ export function extractImageUrls(markdown: string): string[] {
 }
 
 /**
+ * Extract all http(s) URLs from markdown (links, images, etc.) and return unique list
+ */
+export function extractAllUrls(markdown: string): string[] {
+    if (!markdown) return [];
+    const pattern = /https?:\/\/[^\s)\]\">]+/g;
+    const matches = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(markdown)) !== null) {
+        matches.add(m[0]);
+    }
+    return Array.from(matches);
+}
+
+/**
  * Runs the full Medium pipeline in the background: scrape → LLM → strategy → upload → SQLite.
  * Updates `medium_job` row for `jobId` as work progresses and on success/failure.
  */
@@ -39,6 +54,7 @@ export async function runMediumJob(jobId: string, requestUrl: string): Promise<v
             const err = 'Failed to extract content from URL';
             updateMediumJob(jobId, { status: 'failed', error: err });
             logApi('api', 'medium job scrape empty body', { jobId, url: requestUrl });
+            await notifyMediumFailure(jobId, requestUrl, err);
             return;
         }
 
@@ -46,6 +62,7 @@ export async function runMediumJob(jobId: string, requestUrl: string): Promise<v
         const strategy = new MediumStrategy(openai);
         const { content: markdown } = await strategy.generate(mainContent);
         const imageUrls = extractImageUrls(markdown);
+        const artifactUrls = extractAllUrls(markdown);
         const mdUrl = await writeMdAndUpload(markdown, 'medium');
         const generationLogId = logGeneration(requestUrl, mdUrl, imageUrls, 'medium');
 
@@ -65,10 +82,60 @@ export async function runMediumJob(jobId: string, requestUrl: string): Promise<v
             markdownChars: markdown.length,
             generationLogId,
         });
+        await notifyMediumCompletion(jobId, requestUrl, mdUrl, imageUrls, artifactUrls);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error('[runMediumJob]', jobId, error);
         updateMediumJob(jobId, { status: 'failed', error: message });
         logApiError('api', 'medium job failed', error, { jobId, url: requestUrl });
+        await notifyMediumFailure(jobId, requestUrl, message);
+    }
+}
+
+async function notifyMediumCompletion(
+    jobId: string,
+    requestUrl: string,
+    mdUrl: string,
+    imageUrls: string[],
+    artifactUrls: string[],
+): Promise<void> {
+    try {
+        await sendJobNotification({
+            platform: 'medium',
+            status: 'completed',
+            jobId,
+            sourceUrl: requestUrl,
+            mdUrl,
+            imageUrls,
+            artifactUrls,
+        });
+    } catch (error) {
+        logApiError('api', 'medium completion notification failed', error, {
+            jobId,
+            url: requestUrl,
+            mdUrl,
+        });
+    }
+}
+
+async function notifyMediumFailure(
+    jobId: string,
+    requestUrl: string,
+    message: string,
+): Promise<void> {
+    try {
+        await sendJobNotification({
+            platform: 'medium',
+            status: 'failed',
+            jobId,
+            sourceUrl: requestUrl,
+            error: message,
+        });
+    } catch (error) {
+        logApiError('api', 'medium failure notification failed', error, {
+            jobId,
+            url: requestUrl,
+            error: message,
+        });
     }
 }
