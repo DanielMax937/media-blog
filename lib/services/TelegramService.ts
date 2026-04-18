@@ -69,7 +69,7 @@ export async function sendTelegramMessage(text: string): Promise<void> {
 }
 
 export async function sendJobNotification(params: {
-    platform: 'rednote' | 'medium';
+    platform: 'rednote' | 'medium' | 'futures';
     status: 'completed' | 'failed';
     jobId: string;
     sourceUrl: string;
@@ -86,7 +86,11 @@ export async function sendJobNotification(params: {
 
     if (params.mdUrl) lines.push(`md: ${params.mdUrl}`);
 
-    const artifacts = params.artifactUrls ?? params.imageUrls ?? [];
+    // `??` does not treat `[]` as missing: when markdown has no http URLs, callers pass
+    // `artifactUrls: []` and we must still show `imageUrls` (e.g. Rednote XHS uploads).
+    const artifacts = [
+        ...new Set([...(params.artifactUrls ?? []), ...(params.imageUrls ?? [])]),
+    ];
     if (artifacts?.length) {
         lines.push(`artifacts (${artifacts.length}):`);
         for (const url of artifacts) lines.push(url);

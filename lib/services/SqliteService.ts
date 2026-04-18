@@ -6,7 +6,7 @@ import fs from 'fs';
 const DB_DIR = path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DB_DIR, 'blog2media.db');
 
-export type GenerationPlatform = 'rednote' | 'medium';
+export type GenerationPlatform = 'rednote' | 'medium' | 'futures';
 
 /** One generation run logged to SQLite. */
 export interface GenerationLog {
@@ -79,6 +79,20 @@ function getDb(): Database.Database {
         )
     `);
 
+    _db.exec(`
+        CREATE TABLE IF NOT EXISTS futures_job (
+            job_id              TEXT PRIMARY KEY,
+            source_url          TEXT    NOT NULL,
+            status              TEXT    NOT NULL,
+            error               TEXT,
+            md_url              TEXT,
+            image_urls          TEXT,
+            generation_log_id   INTEGER,
+            created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+            updated_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+        )
+    `);
+
     return _db;
 }
 
@@ -87,7 +101,7 @@ function getDb(): Database.Database {
  * @param sourceUrl  The original source page URL the user submitted
  * @param mdUrl      The bitstripe public URL of the uploaded .md file
  * @param imageUrls  List of artifact image URLs (XHS slides / cover / GIFs)
- * @param platform   Which platform generated this output ('rednote' | 'medium')
+ * @param platform   Which platform generated this output ('rednote' | 'medium' | 'futures')
  * @returns The inserted row id
  */
 export function logGeneration(
@@ -297,6 +311,65 @@ export function getMediumJob(jobId: string): MediumJobRecord | null {
     const db = getDb();
     const row = db.prepare('SELECT * FROM medium_job WHERE job_id = ?').get(jobId) as
         | MediumJobRecord
+        | undefined;
+    return row ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Async futures jobs (bitstripe overview → webgemini chat → MD + cover)
+// ---------------------------------------------------------------------------
+
+export type FuturesJobStatus = 'queued' | 'processing' | 'completed' | 'failed';
+
+export interface FuturesJobRecord {
+    job_id: string;
+    source_url: string;
+    status: FuturesJobStatus;
+    error: string | null;
+    md_url: string | null;
+    image_urls: string | null;
+    generation_log_id: number | null;
+    created_at: string;
+    updated_at: string;
+}
+
+/** Create a queued futures job and return its opaque id (use with GET /api/futures/[jobId]). */
+export function createFuturesJob(sourceUrl: string): string {
+    const db = getDb();
+    const jobId = randomUUID();
+    db.prepare(
+        `INSERT INTO futures_job (job_id, source_url, status) VALUES (?, ?, 'queued')`
+    ).run(jobId, sourceUrl);
+    return jobId;
+}
+
+export type FuturesJobPatch = {
+    status?: FuturesJobStatus;
+    error?: string | null;
+    md_url?: string | null;
+    image_urls?: string | null;
+    generation_log_id?: number | null;
+};
+
+export function updateFuturesJob(jobId: string, patch: FuturesJobPatch): void {
+    const db = getDb();
+    const cols: string[] = ["updated_at = datetime('now')"];
+    const values: (string | number | null)[] = [];
+
+    if (patch.status !== undefined) { cols.push('status = ?'); values.push(patch.status); }
+    if (patch.error !== undefined) { cols.push('error = ?'); values.push(patch.error); }
+    if (patch.md_url !== undefined) { cols.push('md_url = ?'); values.push(patch.md_url); }
+    if (patch.image_urls !== undefined) { cols.push('image_urls = ?'); values.push(patch.image_urls); }
+    if (patch.generation_log_id !== undefined) { cols.push('generation_log_id = ?'); values.push(patch.generation_log_id); }
+
+    values.push(jobId);
+    db.prepare(`UPDATE futures_job SET ${cols.join(', ')} WHERE job_id = ?`).run(...values);
+}
+
+export function getFuturesJob(jobId: string): FuturesJobRecord | null {
+    const db = getDb();
+    const row = db.prepare('SELECT * FROM futures_job WHERE job_id = ?').get(jobId) as
+        | FuturesJobRecord
         | undefined;
     return row ?? null;
 }
