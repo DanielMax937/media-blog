@@ -316,7 +316,7 @@ export function getMediumJob(jobId: string): MediumJobRecord | null {
 }
 
 // ---------------------------------------------------------------------------
-// Async futures jobs (bitstripe overview → webgemini chat → MD + cover)
+// Async futures jobs (bitstripe overview → webgemini deepresearch → MD + cover)
 // ---------------------------------------------------------------------------
 
 export type FuturesJobStatus = 'queued' | 'processing' | 'completed' | 'failed';

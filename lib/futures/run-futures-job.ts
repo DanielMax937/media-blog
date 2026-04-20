@@ -13,7 +13,7 @@ import { writeMdAndUpload } from '@/lib/rednote/rednote-helpers';
 import { uploadToBitstripe } from '@/lib/services/BitstripeUploader';
 import { generateCoverImage } from '@/lib/services/CoverImageService';
 import { assertOverviewPageExists } from '@/lib/futures/verify-overview-page';
-import { completeWebgeminiChat } from '@/lib/futures/webgemini-chat';
+import { completeWebgeminiDeepResearch } from '@/lib/futures/webgemini-deepresearch';
 import { extractAllUrls, extractImageUrls } from '@/lib/markdown-extract-urls';
 
 const openai = new OpenAI({
@@ -32,14 +32,14 @@ function stripOuterMarkdownFence(text: string): string {
 
 function buildFuturesReportPrompt(pageText: string): string {
     const body = pageText.length > MAX_SOURCE_CHARS ? pageText.slice(0, MAX_SOURCE_CHARS) : pageText;
-    return `你是一位资深期货分析师。下面是一页「盘面 / 品种概览」的纯文本（来自静态 HTML 页面）。请**仅依据这些内容**写一份**期货复盘报告**。
+    return `你是一位资深期货分析师，兼长**微信公众号长文**排版。下面是一页「盘面 / 品种概览」的纯文本（来自静态 HTML 页面）。请**仅依据这些内容**，用 **Gemini Deep Research** 级别的深度，写一份**期货复盘报告**，整体风格要贴近**微信公众号**：读者友好、段落分明、小标题醒目，但仍保持专业与克制（避免空洞鸡汤、避免标题党）。
 
 输出要求：
-1. 使用 **Markdown**；首行必须是 \`# 标题\`，标题需概括日期与复盘主题。
-2. 结构清晰：可含摘要、品种与板块表现、关键驱动、风险与展望等（按页面实际信息取舍，勿臆造数据中不存在的事实）。
-3. 若页面某处信息不完整，如实说明「页面未提供」而非编造数字。
-4. 语言：中文为主；专业、可读。
-5. **不要**输出任何前言或后记（例如「以下是报告」）；**只输出 Markdown 正文**。
+1. 使用 **Markdown**；首行必须是 \`# 标题\`，标题需概括日期与复盘主题，并适合公众号转发语意。
+2. 结构建议（可按页面信息删减）：**导语式开头**（2–4 句抓要点）→ 分节小标题（如 \`## 一、盘面速览\`、\`## 二、品种与板块\` 等）→ **关键驱动与逻辑** → **风险与关注点** → **简要展望或操作思路备忘**（若页面无依据则写「页面未提供」）。
+3. 若某类数据或结论在页面中找不到依据，**明确写「页面未提供」**，严禁编造具体数字、涨跌幅或未出现的合约信息。
+4. 语言：**中文为主**；专业、可读；可适当用「我们」「本期」等公众号常用口吻，但不要过度口语化。
+5. **不要**输出任何前言或后记（例如「以下是报告」「本文由 AI 生成」）；**只输出 Markdown 正文**。
 
 --- 页面正文开始 ---
 
@@ -76,7 +76,7 @@ async function prependCoverImage(markdown: string): Promise<{ markdown: string; 
 }
 
 /**
- * Scrape overview page → webgemini chat (Markdown 报告) → 封面图 → 上传 bitstripe → SQLite → Telegram。
+ * Scrape overview page → webgemini **Deep Research**（Markdown 公众号风复盘）→ 封面图 → 上传 bitstripe → SQLite → Telegram。
  */
 export async function runFuturesJob(jobId: string, overviewUrl: string): Promise<void> {
     updateFuturesJob(jobId, { status: 'processing', error: null });
@@ -94,10 +94,10 @@ export async function runFuturesJob(jobId: string, overviewUrl: string): Promise
         }
 
         const prompt = buildFuturesReportPrompt(rawContent);
-        logApi('api', 'futures job webgemini chat start', { jobId, promptChars: prompt.length });
-        let markdown = stripOuterMarkdownFence(await completeWebgeminiChat(prompt));
+        logApi('api', 'futures job webgemini deepresearch start', { jobId, promptChars: prompt.length });
+        let markdown = stripOuterMarkdownFence(await completeWebgeminiDeepResearch(prompt));
         if (!markdown.trim()) {
-            throw new Error('webgemini 返回的 Markdown 为空');
+            throw new Error('webgemini Deep Research 返回的 Markdown 为空');
         }
 
         const { markdown: mdWithCover, coverUrl } = await prependCoverImage(markdown);

@@ -60,8 +60,8 @@ export class RednoteStrategy implements BlogStrategy {
             throw err;
         }
 
-        // Step 2: XHS images (webgemini / uploads) — best-effort, same idea as Medium cover:
-        // if the image pipeline fails, still return styled markdown and empty imageUrls.
+        // Step 2: XHS images (webgemini / uploads) — best-effort: slides generate sequentially;
+        // each successful file is uploaded separately so partial success still fills imageUrls.
         let imageUrls: string[] = [];
         try {
             imageUrls = await this.generateAndUploadImages(markdown);
@@ -103,6 +103,7 @@ export class RednoteStrategy implements BlogStrategy {
         logApi(backend === 'google-ai' ? 'genai' : 'webgemini', 'RednoteStrategy.generateXhsImages done', {
             durationMs: Date.now() - tGen,
             fileCount: localPaths.length,
+            expectedSlides: plan.images.length,
             backend,
         });
 

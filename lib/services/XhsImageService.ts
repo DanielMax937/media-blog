@@ -285,34 +285,47 @@ export async function isWebgeminiAvailable(): Promise<boolean> {
 }
 
 /**
- * Generates all XHS images from the given plan in parallel (order preserved).
- * Concurrency is capped process-wide by {@link withWebgeminiConcurrency} (max 2 in-flight jobs).
+ * Generates XHS slides one at a time (cover → content → ending).
+ * Each slide uses up to two attempts; a failed slide is skipped so later slides still run.
+ * Returns local file paths only for slides that succeeded (order preserved among successes).
+ * Concurrency for webgemini is still capped per {@link withWebgeminiConcurrency} inside {@link generateImage}.
  */
 export async function generateXhsImages(plan: XhsImagePlan): Promise<string[]> {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `blog2media-xhs-${plan.slug}-`));
+    const paths: string[] = [];
 
-    const paths = await Promise.all(
-        plan.images.map(async ({ type, prompt }, i) => {
-            const nn = String(i + 1).padStart(2, '0');
-            const outFile = path.join(tmpDir, `${nn}-${type}-${plan.slug}.png`);
+    for (let i = 0; i < plan.images.length; i++) {
+        const { type, prompt } = plan.images[i];
+        const nn = String(i + 1).padStart(2, '0');
+        const outFile = path.join(tmpDir, `${nn}-${type}-${plan.slug}.png`);
+        const base = path.basename(outFile);
+        let saved: string | null = null;
 
-            for (let attempt = 1; attempt <= 2; attempt++) {
-                try {
-                    await generateImage(prompt, outFile);
-                    console.log(`[XhsImageService] ✓ ${path.basename(outFile)}`);
-                    return outFile;
-                } catch (err) {
-                    if (attempt < 2) {
-                        console.warn(`[XhsImageService] Retry ${attempt} for ${path.basename(outFile)}`);
-                    } else {
-                        console.error(`[XhsImageService] ✗ ${path.basename(outFile)} failed after retry:`, err);
-                        throw err;
-                    }
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+                await generateImage(prompt, outFile);
+                console.log(`[XhsImageService] ✓ ${base}`);
+                saved = outFile;
+                break;
+            } catch (err) {
+                if (attempt < 2) {
+                    console.warn(`[XhsImageService] Retry ${attempt} for ${base}`);
+                } else {
+                    console.error(`[XhsImageService] ✗ ${base} failed after retry:`, err);
+                    logApiError('webgemini', 'XhsImageService slide failed after retries', err, {
+                        slug: plan.slug,
+                        slideIndex: i,
+                        type,
+                        outFile: base,
+                    });
                 }
             }
-            throw new Error(`[generateXhsImages] unreachable for ${outFile}`);
-        })
-    );
+        }
+
+        if (saved) {
+            paths.push(saved);
+        }
+    }
 
     return paths;
 }

@@ -1,19 +1,28 @@
 import OpenAI from 'openai';
 
-const FALLBACK_OPENAI_API_KEY = 'sk-15507a2ad0414801b7e7579f7b38f474';
-const FALLBACK_OPENAI_BASE_URL = 'https://api.deepseek.com';
-export const FALLBACK_OPENAI_MODEL = 'deepseek-chat';
+function getRequiredEnv(name: string): string {
+    const value = process.env[name]?.trim();
+    if (!value) {
+        throw new Error(`[llm-fallback] Missing required env: ${name}`);
+    }
+    return value;
+}
 
-export const FALLBACK_ANTHROPIC_API_KEY = 'sk-15507a2ad0414801b7e7579f7b38f474';
-export const FALLBACK_ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic';
-export const FALLBACK_ANTHROPIC_MODEL = 'deepseek-chat';
+const FALLBACK_OPENAI_API_KEY_ENV = 'FALLBACK_OPENAI_API_KEY';
+export const FALLBACK_OPENAI_BASE_URL = process.env.FALLBACK_OPENAI_BASE_URL?.trim() || 'https://api.deepseek.com';
+export const FALLBACK_OPENAI_MODEL = process.env.FALLBACK_OPENAI_MODEL?.trim() || 'deepseek-chat';
+
+const FALLBACK_ANTHROPIC_API_KEY_ENV = 'FALLBACK_ANTHROPIC_API_KEY';
+export const FALLBACK_ANTHROPIC_BASE_URL = process.env.FALLBACK_ANTHROPIC_BASE_URL?.trim() || 'https://api.deepseek.com/anthropic';
+export const FALLBACK_ANTHROPIC_MODEL = process.env.FALLBACK_ANTHROPIC_MODEL?.trim() || 'deepseek-chat';
+export const FALLBACK_ANTHROPIC_API_KEY = process.env[FALLBACK_ANTHROPIC_API_KEY_ENV]?.trim() || '';
 
 let _fallbackOpenAI: OpenAI | null = null;
 
 export function getFallbackOpenAI(): OpenAI {
     if (!_fallbackOpenAI) {
         _fallbackOpenAI = new OpenAI({
-            apiKey: FALLBACK_OPENAI_API_KEY,
+            apiKey: getRequiredEnv(FALLBACK_OPENAI_API_KEY_ENV),
             baseURL: FALLBACK_OPENAI_BASE_URL,
         });
     }

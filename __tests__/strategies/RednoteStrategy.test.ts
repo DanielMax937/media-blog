@@ -115,6 +115,32 @@ describe('RednoteStrategy', () => {
         ]);
     });
 
+    it('returns partial imageUrls when generation returns fewer slides than planned', async () => {
+        mockIsWebgeminiAvailable.mockResolvedValue(true);
+        mockPlanXhsImages.mockResolvedValue({
+            slug: 'partial-gen',
+            images: [
+                { type: 'cover', prompt: 'p1' },
+                { type: 'content', prompt: 'p2' },
+                { type: 'ending', prompt: 'p3' },
+            ],
+        });
+        mockGenerateXhsImages.mockResolvedValue(['/tmp/01-cover.png', '/tmp/02-content.png']);
+        mockUploadToBitstripe
+            .mockResolvedValueOnce('https://www.bitstripe.cn/files/01-cover.png')
+            .mockResolvedValueOnce('https://www.bitstripe.cn/files/02-content.png');
+
+        const openai = makeOpenAI('# 文章');
+        const strategy = new RednoteStrategy(openai);
+
+        const result = await strategy.generate('content');
+
+        expect(result.imageUrls).toEqual([
+            'https://www.bitstripe.cn/files/01-cover.png',
+            'https://www.bitstripe.cn/files/02-content.png',
+        ]);
+    });
+
     it('returns partial imageUrls when some (but not all) uploads fail', async () => {
         mockIsWebgeminiAvailable.mockResolvedValue(true);
         mockPlanXhsImages.mockResolvedValue({

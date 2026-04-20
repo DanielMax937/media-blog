@@ -27,7 +27,7 @@ async function readJsonBodyObject(request: Request): Promise<Record<string, unkn
  * POST /api/futures
  * Body: { date?: string } — optional `YYYYMMDD` (Asia/Shanghai calendar day when omitted).
  * Builds `https://www.bitstripe.cn/files/{date}_overview.html`, then async pipeline:
- * HTTP check → browser scrape → webgemini POST /chat (Markdown 报告) → 封面图 → bitstripe → Telegram.
+ * HTTP check → browser scrape → webgemini **POST /deepresearch**（公众号风 Markdown 复盘）→ 封面图 → bitstripe → Telegram.
  * Response: 202 { jobId, sourceUrl, date }
  * Poll GET /api/futures/[jobId]
  */
