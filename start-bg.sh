@@ -25,8 +25,28 @@ echo "  API doc:  ./docs/API.md"
 echo "  Log file: $LOG_FILE"
 echo "──────────────────────────────────────────"
 
-nohup npx next dev -H 0.0.0.0 -p "$PORT" >> "$LOG_FILE" 2>&1 &
-SERVICE_PID=$!
+start_detached() {
+  python3 - "$LOG_FILE" <<'PY'
+import os
+import subprocess
+import sys
+
+log_file = sys.argv[1]
+env = os.environ.copy()
+with open(log_file, "ab", buffering=0) as log:
+    proc = subprocess.Popen(
+        ["npx", "next", "dev", "-H", "0.0.0.0", "-p", env.get("PORT", "9300")],
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        env=env,
+    )
+print(proc.pid)
+PY
+}
+
+SERVICE_PID="$(PORT="$PORT" start_detached)"
 echo "$SERVICE_PID" > "$PID_FILE"
 
 sleep 2

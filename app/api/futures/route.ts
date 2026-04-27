@@ -26,8 +26,7 @@ async function readJsonBodyObject(request: Request): Promise<Record<string, unkn
 /**
  * POST /api/futures
  * Body: { date?: string } — optional `YYYYMMDD` (Asia/Shanghai calendar day when omitted).
- * Builds `https://www.bitstripe.cn/files/{date}_overview.html`, then async pipeline:
- * HTTP check → browser scrape → webgemini **POST /deepresearch**（公众号风 Markdown 复盘）→ 封面图 → bitstripe → Telegram.
+ * Gemini Deep Research 生成指定日期中国期货市场复盘报告 → 封面图 → bitstripe → Telegram.
  * Response: 202 { jobId, sourceUrl, date }
  * Poll GET /api/futures/[jobId]
  */
@@ -51,7 +50,7 @@ export async function POST(request: Request) {
         const jobId = createFuturesJob(sourceUrl)
         logApi('api', 'POST /api/futures accepted (async)', { sourceUrl, jobId, date: ymd })
 
-        void runFuturesJob(jobId, sourceUrl).catch((err) => {
+        void runFuturesJob(jobId, sourceUrl, ymd).catch((err) => {
             console.error('[/api/futures] runFuturesJob unhandled:', err)
             logApiError('api', 'runFuturesJob unhandled rejection', err, { jobId, url: sourceUrl })
         })

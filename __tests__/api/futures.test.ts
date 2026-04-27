@@ -40,6 +40,7 @@ describe('POST /api/futures', () => {
         expect(runFuturesJob).toHaveBeenCalledWith(
             'test-futures-job-id',
             'https://www.bitstripe.cn/files/20260323_overview.html',
+            '20260323',
         );
     });
 

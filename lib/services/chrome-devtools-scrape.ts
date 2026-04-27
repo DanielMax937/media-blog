@@ -580,10 +580,16 @@ function extractZhangxinxuArticleUrlsFromHtml(html: string): string[] {
  * Opens a zhangxinxu.com WordPress category page and returns all article permalink URLs
  * found via `a[rel="bookmark"]` selectors (standard WordPress bookmark links).
  * If `categoryUrl` is omitted, defaults to the JS category listing.
+ * `page` controls pagination: 1 = first page, N = `/page/N/` (WordPress convention).
  */
 export async function listZhangxinxuCategoryArticleUrls(
     categoryUrl: string = ZHANGXINXU_CATEGORY_JS_URL,
+    page: number = 1,
 ): Promise<string[]> {
+    if (page > 1) {
+        const base = categoryUrl.replace(/\/?(\?.*)?$/, '');
+        categoryUrl = `${base}/page/${page}/`;
+    }
     if (shouldForcePlaywright()) {
         logApi('browser', 'listZhangxinxuCategoryArticleUrls forced to playwright headed', { url: categoryUrl });
         return await listZhangxinxuCategoryArticleUrlsViaPlaywright(categoryUrl);

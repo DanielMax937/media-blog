@@ -3,36 +3,56 @@ import { listZhangxinxuCategoryArticleUrls } from '@/lib/services/chrome-devtool
 import { hasGenerationLogForSourceUrl } from '@/lib/services/SqliteService';
 
 const PREVIEW_MAX = 8;
+const MAX_PAGES = 50;
 
 /**
  * Opens the zhangxinxu.com JS category listing via chrome-dev-mcp-server, extracts
  * article permalink URLs from `a[rel="bookmark"]` links, and returns the first URL
  * that has no `generation_log` row yet (platform = 'medium').
- * Returns `null` if the list is empty or every URL has already been processed.
+ * Iterates through paginated category pages if all URLs on the current page
+ * have already been processed. Returns `null` when every page is exhausted.
  */
 export async function pickFirstUnprocessedZhangxinxuArticleUrl(): Promise<string | null> {
-    const links = await listZhangxinxuCategoryArticleUrls();
-    logApi('api', 'zhangxinxu.pick: scraped article links', {
-        linkCount: links.length,
-        preview: links.slice(0, PREVIEW_MAX).join(' | ') || '(none)',
-    });
+    let totalSkipped = 0;
 
-    let skipped = 0;
-    for (const href of links) {
-        if (!hasGenerationLogForSourceUrl(href, 'medium')) {
-            logApi('api', 'zhangxinxu.pick: first unprocessed article', {
-                url: href,
-                skippedAlreadyInLog: skipped,
-            });
-            return href;
+    for (let page = 1; page <= MAX_PAGES; page++) {
+        const links = await listZhangxinxuCategoryArticleUrls(undefined, page);
+        logApi('api', 'zhangxinxu.pick: scraped article links', {
+            page,
+            linkCount: links.length,
+            preview: links.slice(0, PREVIEW_MAX).join(' | ') || '(none)',
+        });
+
+        if (links.length === 0) {
+            logApi('api', 'zhangxinxu.pick: no more pages', { page, totalSkipped });
+            break;
         }
-        skipped += 1;
+
+        let skippedOnPage = 0;
+        for (const href of links) {
+            if (!hasGenerationLogForSourceUrl(href, 'medium')) {
+                logApi('api', 'zhangxinxu.pick: first unprocessed article', {
+                    page,
+                    url: href,
+                    skippedAlreadyInLog: totalSkipped,
+                });
+                return href;
+            }
+            skippedOnPage += 1;
+            totalSkipped += 1;
+        }
+
+        logApi('api', 'zhangxinxu.pick: all processed on page, advancing', {
+            page,
+            skippedOnPage,
+            nextPage: page + 1,
+        });
     }
 
     logApi('api', 'zhangxinxu.pick: no url available', {
-        linkCount: links.length,
-        reason: links.length === 0 ? 'empty_list' : 'all_hrefs_in_generation_log',
-        skippedCount: skipped,
+        reason: 'all_pages_exhausted',
+        totalSkipped,
+        maxPages: MAX_PAGES,
     });
     return null;
 }
