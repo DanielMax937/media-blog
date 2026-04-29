@@ -360,6 +360,7 @@ TECHNICAL REQUIREMENTS:
             model,
             durationMs: Date.now() - t0,
             isTechnical: !!isTechnical,
+            detectPreview: detectMsg.replace(/\s+/g, ' ').trim().slice(0, 200),
         });
 
         let demo = undefined;
