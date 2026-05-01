@@ -39,6 +39,7 @@ const DEFAULT_V2EX_JOBS_POST_WAIT_MS = 3_000;
 /** Relative to `process.cwd()`; under `/data/` (gitignored). */
 const V2EX_DEBUG_HTML_FILE = path.join('data', 'debug', 'v2ex-jobs-last.html');
 const FORCE_PLAYWRIGHT_SCRAPE_ENV = 'FORCE_PLAYWRIGHT_SCRAPE';
+const ZHANGXINXU_HOSTNAME = 'www.zhangxinxu.com';
 
 function isTruthy(value: string | undefined): boolean {
     if (!value) return false;
@@ -47,6 +48,20 @@ function isTruthy(value: string | undefined): boolean {
 
 function shouldForcePlaywright(): boolean {
     return isTruthy(process.env[FORCE_PLAYWRIGHT_SCRAPE_ENV]);
+}
+
+class WrongZhangxinxuPageError extends Error {
+    constructor(message: string, public readonly href: string, public readonly targetUrl: string) {
+        super(message);
+        this.name = 'WrongZhangxinxuPageError';
+    }
+}
+
+class WrongScrapePageError extends Error {
+    constructor(message: string, public readonly href: string, public readonly targetUrl: string) {
+        super(message);
+        this.name = 'WrongScrapePageError';
+    }
 }
 
 function shouldWriteV2exDebugHtml(): boolean {
@@ -251,6 +266,144 @@ async function selectPageById(pageId: number, selectTimeoutMs: number): Promise<
     }
 }
 
+type CdsPageEntry = {
+    pageId: number;
+    url?: string;
+    selected?: boolean;
+};
+
+function normalizeUrlPathname(pathname: string): string {
+    return pathname.replace(/\/+$/, '') || '/';
+}
+
+function isMatchingZhangxinxuCategoryHref(href: string, targetUrl: string): boolean {
+    try {
+        const current = new URL(href);
+        const target = new URL(targetUrl);
+        return (
+            current.hostname === ZHANGXINXU_HOSTNAME &&
+            target.hostname === ZHANGXINXU_HOSTNAME &&
+            normalizeUrlPathname(current.pathname) === normalizeUrlPathname(target.pathname)
+        );
+    } catch {
+        return false;
+    }
+}
+
+function isMatchingTargetHref(href: string, targetUrl: string): boolean {
+    try {
+        const current = new URL(href);
+        const target = new URL(targetUrl);
+        return (
+            current.hostname === target.hostname &&
+            normalizeUrlPathname(current.pathname) === normalizeUrlPathname(target.pathname)
+        );
+    } catch {
+        return false;
+    }
+}
+
+function pageEntryFromUnknown(value: unknown): CdsPageEntry | null {
+    if (!value || typeof value !== 'object') return null;
+    const o = value as Record<string, unknown>;
+    const pageIdValue = o.pageId ?? o.page_id ?? o.id ?? o.index;
+    const pageId =
+        typeof pageIdValue === 'number'
+            ? pageIdValue
+            : typeof pageIdValue === 'string' && /^\d+$/.test(pageIdValue)
+                ? Number(pageIdValue)
+                : null;
+    if (pageId == null) return null;
+    return {
+        pageId,
+        url: typeof o.url === 'string' ? o.url : typeof o.href === 'string' ? o.href : undefined,
+        selected: o.selected === true || o.isSelected === true,
+    };
+}
+
+function pageEntriesFromJson(value: unknown): CdsPageEntry[] {
+    if (Array.isArray(value)) return value.map(pageEntryFromUnknown).filter((x): x is CdsPageEntry => x != null);
+    if (!value || typeof value !== 'object') return [];
+    const o = value as Record<string, unknown>;
+    const candidates = [o.pages, o.tabs, o.targets, o.data].filter(Array.isArray);
+    for (const candidate of candidates) {
+        const entries = pageEntriesFromJson(candidate);
+        if (entries.length > 0) return entries;
+    }
+    const single = pageEntryFromUnknown(o);
+    return single ? [single] : [];
+}
+
+function parsePageEntriesFromToolText(text: string): CdsPageEntry[] {
+    const trimmed = text.trim();
+    if (!trimmed) return [];
+    try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        const entries = pageEntriesFromJson(parsed);
+        if (entries.length > 0) return entries;
+    } catch {
+        /* fall through */
+    }
+
+    const entries: CdsPageEntry[] = [];
+    for (const line of text.split(/\r?\n/)) {
+        const m = line.match(/^\s*(\d+):\s+(.+?)\s*$/);
+        if (!m) continue;
+        const url = m[2].match(/https?:\/\/\S+/)?.[0]?.replace(/[)\],]+$/, '');
+        entries.push({
+            pageId: Number(m[1]),
+            url,
+            selected: /\[selected\]/i.test(line),
+        });
+    }
+    return entries;
+}
+
+async function selectMatchingPageByTargetUrl(
+    targetUrl: string,
+    listTimeoutMs: number,
+    selectTimeoutMs: number,
+    logPrefix: string,
+    isMatch: (href: string, targetUrl: string) => boolean = isMatchingTargetHref,
+): Promise<number | null> {
+    const list = await cdsPost('/api/list_pages', {}, listTimeoutMs);
+    if (list.is_error) {
+        throw new Error(firstTextBlock(list) || 'list_pages failed');
+    }
+    const entries = parsePageEntriesFromToolText(firstTextBlock(list));
+    const matched = entries
+        .filter((entry) => entry.url && isMatch(entry.url, targetUrl))
+        .at(-1);
+    if (!matched) {
+        logApi('browser', `${logPrefix}: no matching tab found`, {
+            targetUrl,
+            pageCount: entries.length,
+        });
+        return null;
+    }
+    await selectPageById(matched.pageId, selectTimeoutMs);
+    logApi('browser', `${logPrefix}: selected matching tab`, {
+        targetUrl,
+        pageId: matched.pageId,
+        href: matched.url || '',
+    });
+    return matched.pageId;
+}
+
+async function selectMatchingZhangxinxuPage(
+    targetUrl: string,
+    listTimeoutMs: number,
+    selectTimeoutMs: number,
+): Promise<number | null> {
+    return selectMatchingPageByTargetUrl(
+        targetUrl,
+        listTimeoutMs,
+        selectTimeoutMs,
+        'zhangxinxu.category',
+        isMatchingZhangxinxuCategoryHref,
+    );
+}
+
 /**
  * chrome-dev-mcp-server wraps `evaluate_script` results in prose + a fenced JSON string, e.g.
  * `Script ran on page and returned:\n```json\n\"<html>...\"\n```` — without unwrapping,
@@ -313,48 +466,90 @@ export async function scrapeUrlBodyText(url: string): Promise<string> {
         const closeTimeout = envMs('CDS_CLOSE_HTTP_TIMEOUT_MS', DEFAULT_CLOSE_HTTP_TIMEOUT_MS);
         const selectTimeout = envMs('CDS_SELECT_HTTP_TIMEOUT_MS', DEFAULT_SELECT_HTTP_TIMEOUT_MS);
 
-        const nav = await cdsPost('/api/new_page', { url, timeout: navTimeout }, newPageHttpTimeout);
-        if (nav.is_error) {
-            throw new Error(firstTextBlock(nav) || 'new_page failed');
-        }
-
-        let pageId = parsePageIdFromToolText(firstTextBlock(nav));
-        if (pageId == null) {
-            try {
-                const list = await cdsPost('/api/list_pages', {}, listTimeout);
-                if (!list.is_error) pageId = parsePageIdFromToolText(firstTextBlock(list));
-            } catch {
-                /* ignore */
+        let lastWrongPage: WrongScrapePageError | null = null;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            const nav = await cdsPost('/api/new_page', { url, timeout: navTimeout }, newPageHttpTimeout);
+            if (nav.is_error) {
+                throw new Error(firstTextBlock(nav) || 'new_page failed');
             }
-        }
-        if (pageId != null) {
-            await selectPageById(pageId, selectTimeout);
-        }
 
-        const evalRes = await cdsPost(
-            '/api/evaluate_script',
-            {
-                function: `() => {
-          const el = document.body;
-          return el ? el.innerText : '';
-        }`,
-            },
-            evalTimeout,
-        );
-        const bodyText = parseEvaluateResultText(evalRes);
-
-        if (pageId != null) {
+            let pageId = parsePageIdFromToolText(firstTextBlock(nav));
+            let selectedByUrl = false;
             try {
-                const close = await cdsPost('/api/close_page', { pageId }, closeTimeout);
-                if (close.is_error) {
-                    console.warn('[chrome-devtools-scrape] close_page failed:', firstTextBlock(close).slice(0, 200));
+                const matchedPageId = await selectMatchingPageByTargetUrl(
+                    url,
+                    listTimeout,
+                    selectTimeout,
+                    'scrapeUrlBodyText',
+                );
+                if (matchedPageId != null) {
+                    pageId = matchedPageId;
+                    selectedByUrl = true;
                 }
-            } catch (e) {
-                console.warn('[chrome-devtools-scrape] close_page error:', e);
+            } catch (err) {
+                logApi('browser', 'scrapeUrlBodyText: select matching tab failed', {
+                    targetUrl: url,
+                    reason: err instanceof Error ? err.message.slice(0, 240) : String(err).slice(0, 240),
+                });
             }
+            if (pageId != null && !selectedByUrl) {
+                await selectPageById(pageId, selectTimeout);
+            }
+
+            const evalRes = await cdsPost(
+                '/api/evaluate_script',
+                {
+                    function: `() => {
+          const el = document.body;
+          return JSON.stringify({
+            href: location.href,
+            text: el ? el.innerText : '',
+          });
+        }`,
+                },
+                evalTimeout,
+            );
+            const raw = parseEvaluateResultText(evalRes);
+
+            if (pageId != null) {
+                try {
+                    const close = await cdsPost('/api/close_page', { pageId }, closeTimeout);
+                    if (close.is_error) {
+                        console.warn('[chrome-devtools-scrape] close_page failed:', firstTextBlock(close).slice(0, 200));
+                    }
+                } catch (e) {
+                    console.warn('[chrome-devtools-scrape] close_page error:', e);
+                }
+            }
+
+            try {
+                const parsed = JSON.parse(raw) as unknown;
+                if (parsed && typeof parsed === 'object') {
+                    const o = parsed as Record<string, unknown>;
+                    const href = typeof o.href === 'string' ? o.href : '';
+                    if (!isMatchingTargetHref(href, url)) {
+                        lastWrongPage = new WrongScrapePageError(
+                            `evaluated wrong page for scrapeUrlBodyText: ${href || '(empty href)'}`,
+                            href,
+                            url,
+                        );
+                        logApi('browser', 'scrapeUrlBodyText: evaluated wrong tab', {
+                            targetUrl: url,
+                            href,
+                            attempt,
+                        });
+                        continue;
+                    }
+                    return typeof o.text === 'string' ? o.text : '';
+                }
+            } catch {
+                /* Older MCP wrappers should not reach this after our JSON.stringify script; keep a fallback. */
+            }
+            return raw;
         }
 
-        return bodyText;
+        if (lastWrongPage) throw lastWrongPage;
+        return '';
     } catch (err) {
         if (!isChromeDevtoolsUnavailableError(err)) throw err;
 
@@ -596,36 +791,43 @@ export async function listZhangxinxuCategoryArticleUrls(
     }
 
     try {
-    const navTimeout = envMs('CDS_NAVIGATION_TIMEOUT_MS', DEFAULT_NAV_TIMEOUT_MS);
-    const buffer = envMs('CDS_NEW_PAGE_HTTP_BUFFER_MS', DEFAULT_NEW_PAGE_HTTP_BUFFER_MS);
-    const newPageHttpTimeout = envMs('CDS_NEW_PAGE_HTTP_TIMEOUT_MS', navTimeout + buffer);
-    const evalTimeout = envMs('CDS_EVAL_HTTP_TIMEOUT_MS', DEFAULT_EVAL_HTTP_TIMEOUT_MS);
-    const listTimeout = envMs('CDS_LIST_HTTP_TIMEOUT_MS', DEFAULT_LIST_HTTP_TIMEOUT_MS);
-    const closeTimeout = envMs('CDS_CLOSE_HTTP_TIMEOUT_MS', DEFAULT_CLOSE_HTTP_TIMEOUT_MS);
-    const selectTimeout = envMs('CDS_SELECT_HTTP_TIMEOUT_MS', DEFAULT_SELECT_HTTP_TIMEOUT_MS);
+        const navTimeout = envMs('CDS_NAVIGATION_TIMEOUT_MS', DEFAULT_NAV_TIMEOUT_MS);
+        const buffer = envMs('CDS_NEW_PAGE_HTTP_BUFFER_MS', DEFAULT_NEW_PAGE_HTTP_BUFFER_MS);
+        const newPageHttpTimeout = envMs('CDS_NEW_PAGE_HTTP_TIMEOUT_MS', navTimeout + buffer);
+        const evalTimeout = envMs('CDS_EVAL_HTTP_TIMEOUT_MS', DEFAULT_EVAL_HTTP_TIMEOUT_MS);
+        const listTimeout = envMs('CDS_LIST_HTTP_TIMEOUT_MS', DEFAULT_LIST_HTTP_TIMEOUT_MS);
+        const closeTimeout = envMs('CDS_CLOSE_HTTP_TIMEOUT_MS', DEFAULT_CLOSE_HTTP_TIMEOUT_MS);
+        const selectTimeout = envMs('CDS_SELECT_HTTP_TIMEOUT_MS', DEFAULT_SELECT_HTTP_TIMEOUT_MS);
 
-    const nav = await cdsPost('/api/new_page', { url: categoryUrl, timeout: navTimeout }, newPageHttpTimeout);
-    if (nav.is_error) {
-        throw new Error(firstTextBlock(nav) || 'new_page failed');
-    }
+        let lastWrongPage: WrongZhangxinxuPageError | null = null;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            const nav = await cdsPost('/api/new_page', { url: categoryUrl, timeout: navTimeout }, newPageHttpTimeout);
+            if (nav.is_error) {
+                throw new Error(firstTextBlock(nav) || 'new_page failed');
+            }
 
-    let pageId = parsePageIdFromToolText(firstTextBlock(nav));
-    if (pageId == null) {
-        try {
-            const list = await cdsPost('/api/list_pages', {}, listTimeout);
-            if (!list.is_error) pageId = parsePageIdFromToolText(firstTextBlock(list));
-        } catch {
-            /* ignore */
-        }
-    }
-    if (pageId != null) {
-        await selectPageById(pageId, selectTimeout);
-    }
+            let pageId = parsePageIdFromToolText(firstTextBlock(nav));
+            let selectedByUrl = false;
+            try {
+                const matchedPageId = await selectMatchingZhangxinxuPage(categoryUrl, listTimeout, selectTimeout);
+                if (matchedPageId != null) {
+                    pageId = matchedPageId;
+                    selectedByUrl = true;
+                }
+            } catch (err) {
+                logApi('browser', 'zhangxinxu.category: select matching tab failed', {
+                    targetUrl: categoryUrl,
+                    reason: err instanceof Error ? err.message.slice(0, 240) : String(err).slice(0, 240),
+                });
+            }
+            if (pageId != null && !selectedByUrl) {
+                await selectPageById(pageId, selectTimeout);
+            }
 
-    const evalRes = await cdsPost(
-        '/api/evaluate_script',
-        {
-            function: `() => {
+            const evalRes = await cdsPost(
+                '/api/evaluate_script',
+                {
+                    function: `() => {
           const seen = new Set();
           const out = [];
           const selectors = [
@@ -665,53 +867,71 @@ export async function listZhangxinxuCategoryArticleUrls(
             html: out.length ? '' : document.documentElement.outerHTML,
           });
         }`,
-        },
-        evalTimeout,
-    );
-
-    const raw = parseEvaluateResultText(evalRes);
-
-    if (pageId != null) {
-        try {
-            const close = await cdsPost('/api/close_page', { pageId }, closeTimeout);
-            if (close.is_error) {
-                console.warn('[chrome-devtools-scrape] close_page failed:', firstTextBlock(close).slice(0, 200));
-            }
-        } catch (e) {
-            console.warn('[chrome-devtools-scrape] close_page error:', e);
-        }
-    }
-
-    try {
-        const v = JSON.parse(raw) as unknown;
-        if (Array.isArray(v)) {
-            return v.filter((x): x is string => typeof x === 'string');
-        }
-        if (v && typeof v === 'object') {
-            const o = v as Record<string, unknown>;
-            const urls = Array.isArray(o.urls)
-                ? o.urls.filter((x): x is string => typeof x === 'string')
-                : [];
-            if (urls.length > 0) {
-                return urls;
-            }
-            const fallback = extractZhangxinxuArticleUrlsFromHtml(
-                typeof o.html === 'string' ? o.html : '',
+                },
+                evalTimeout,
             );
-            logApi('browser', 'zhangxinxu.category: diagnostics', {
-                href: typeof o.href === 'string' ? o.href : '',
-                title: typeof o.title === 'string' ? o.title.slice(0, 120) : '',
-                relBookmark: Number(o.relBookmark ?? 0),
-                entryTitle: Number(o.entryTitle ?? 0),
-                anchorCount: Number(o.anchorCount ?? 0),
-                fallbackCount: fallback.length,
-            });
-            return fallback;
+
+            const raw = parseEvaluateResultText(evalRes);
+
+            if (pageId != null) {
+                try {
+                    const close = await cdsPost('/api/close_page', { pageId }, closeTimeout);
+                    if (close.is_error) {
+                        console.warn('[chrome-devtools-scrape] close_page failed:', firstTextBlock(close).slice(0, 200));
+                    }
+                } catch (e) {
+                    console.warn('[chrome-devtools-scrape] close_page error:', e);
+                }
+            }
+
+            try {
+                const v = JSON.parse(raw) as unknown;
+                if (Array.isArray(v)) {
+                    return v.filter((x): x is string => typeof x === 'string');
+                }
+                if (v && typeof v === 'object') {
+                    const o = v as Record<string, unknown>;
+                    const href = typeof o.href === 'string' ? o.href : '';
+                    if (!isMatchingZhangxinxuCategoryHref(href, categoryUrl)) {
+                        lastWrongPage = new WrongZhangxinxuPageError(
+                            `evaluated wrong page for zhangxinxu category: ${href || '(empty href)'}`,
+                            href,
+                            categoryUrl,
+                        );
+                        logApi('browser', 'zhangxinxu.category: evaluated wrong tab', {
+                            targetUrl: categoryUrl,
+                            href,
+                            attempt,
+                        });
+                        continue;
+                    }
+
+                    const urls = Array.isArray(o.urls)
+                        ? o.urls.filter((x): x is string => typeof x === 'string')
+                        : [];
+                    if (urls.length > 0) {
+                        return urls;
+                    }
+                    const fallback = extractZhangxinxuArticleUrlsFromHtml(
+                        typeof o.html === 'string' ? o.html : '',
+                    );
+                    logApi('browser', 'zhangxinxu.category: diagnostics', {
+                        href,
+                        title: typeof o.title === 'string' ? o.title.slice(0, 120) : '',
+                        relBookmark: Number(o.relBookmark ?? 0),
+                        entryTitle: Number(o.entryTitle ?? 0),
+                        anchorCount: Number(o.anchorCount ?? 0),
+                        fallbackCount: fallback.length,
+                    });
+                    return fallback;
+                }
+            } catch {
+                /* fall through */
+            }
+            return [];
         }
-    } catch {
-        /* fall through */
-    }
-    return [];
+        if (lastWrongPage) throw lastWrongPage;
+        return [];
     } catch (err) {
         if (!isChromeDevtoolsUnavailableError(err)) throw err;
 
