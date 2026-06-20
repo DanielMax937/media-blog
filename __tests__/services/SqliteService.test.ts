@@ -4,6 +4,17 @@
  */
 
 import Database from 'better-sqlite3';
+import os from 'os';
+import path from 'path';
+import { mkdtempSync } from 'fs';
+
+// Redirect the JSONL mirror file to a temp dir so logGeneration() calls
+// from this test suite never write into ${cwd}/data/generation-log.jsonl
+// (which is the path the production runtime + monitoring scripts read).
+process.env.BLOG2MEDIA_GENERATION_LOG_FILE = path.join(
+    mkdtempSync(path.join(os.tmpdir(), 'blog2media-test-')),
+    'generation-log.jsonl'
+);
 
 // We need to intercept the DB path before the module initialises it.
 // Strategy: mock 'better-sqlite3' to capture the constructor call, then

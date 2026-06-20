@@ -5,7 +5,7 @@
  * 用法（在 blog2media 目录）:
  *   node scripts/verify-openai-chat.mjs
  * 可选环境变量:
- *   OPENAI_VERIFY_MODEL — 覆盖默认模型（默认取 OPENAI_MODEL，否则 gpt-5.4）
+ *   OPENAI_VERIFY_MODEL — 覆盖默认模型（默认取 OPENAI_MODEL；未设置则使用网关默认模型）
  */
 
 import { existsSync, readFileSync } from 'fs';
@@ -55,12 +55,12 @@ const baseURL = process.env.OPENAI_BASE_URL;
 const model =
     process.env.OPENAI_VERIFY_MODEL ||
     process.env.OPENAI_MODEL ||
-    'gpt-5.4';
+    undefined;
 
 console.log('--- verify-openai-chat ---');
 console.log('baseURL:', baseURL ?? '(undefined — SDK 将用默认 api.openai.com)');
 console.log('apiKey:', maskKey(apiKey));
-console.log('model:', model);
+console.log('model:', model ?? '(gateway default)');
 console.log('');
 
 if (!apiKey) {
@@ -74,14 +74,15 @@ const client = new OpenAI({
 });
 
 try {
-    const response = await client.chat.completions.create({
-        model,
+    const request = {
         messages: [
             { role: 'system', content: 'You reply with one short English sentence.' },
             { role: 'user', content: 'Say hello in exactly three words.' },
         ],
         max_tokens: 64,
-    });
+        ...(model ? { model } : {}),
+    };
+    const response = await client.chat.completions.create(request);
 
     const choice = response.choices?.[0];
     const content = choice?.message?.content ?? '';

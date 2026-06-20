@@ -9,7 +9,7 @@ import {
     isGoogleImageGenerationConfigured,
     isGoogleImageGenerationEnabled,
 } from './GoogleImageService';
-import { chatWithFallback } from '../llm-fallback';
+import { chatWithFallback, describeOpenAIModel, getPrimaryOpenAIModel } from '../llm-fallback';
 
 const WEBGEMINI_BASE = process.env.WEBGEMINI_URL ?? 'http://127.0.0.1:8200';
 const POLL_INTERVAL_MS = 5000;
@@ -32,9 +32,10 @@ for an eye-catching cover image. Style: clean, modern, professional illustration
 Return ONLY the prompt string, no quotes, no extra text.
 Include "16:9 aspect ratio, high resolution, professional blog cover, digital illustration style" at the end.`;
 
-    const model = process.env.OPENAI_MODEL ?? 'gpt-5.4';
+    const model = getPrimaryOpenAIModel();
+    const modelLog = describeOpenAIModel(model);
     const t0 = Date.now();
-    logApi('openai', 'CoverImageService.generateCoverPrompt start', { model, markdownChars: markdown.length });
+    logApi('openai', 'CoverImageService.generateCoverPrompt start', { model: modelLog, markdownChars: markdown.length });
     try {
         const response = await chatWithFallback(openai, {
             model,
@@ -51,14 +52,14 @@ Include "16:9 aspect ratio, high resolution, professional blog cover, digital il
             trimmedPrompt ||
             'Abstract technology concept, 16:9 aspect ratio, high resolution, professional blog cover, digital illustration style';
         logApi('openai', 'CoverImageService.generateCoverPrompt ok', {
-            model,
+            model: modelLog,
             durationMs: Date.now() - t0,
             promptChars: text.length,
         });
         return text;
     } catch (err) {
         logApiError('openai', 'CoverImageService.generateCoverPrompt failed', err, {
-            model,
+            model: modelLog,
             durationMs: Date.now() - t0,
         });
         throw err;

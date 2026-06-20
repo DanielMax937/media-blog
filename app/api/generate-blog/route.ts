@@ -4,7 +4,7 @@ import { StrategyFactory } from '@/lib/strategies/StrategyFactory'
 import { scrapeUrlBodyText } from '@/lib/services/chrome-devtools-scrape'
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from '@/lib/services/api-logger'
 import { getOpenAiBaseUrl } from '@/lib/openai-base-url'
-import { chatWithFallback } from '@/lib/llm-fallback'
+import { chatWithFallback, describeOpenAIModel, getPrimaryOpenAIModel } from '@/lib/llm-fallback'
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
@@ -46,9 +46,10 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'Failed to extract content' }, { status: 500 })
         }
 
-        const model = process.env.OPENAI_MODEL ?? 'gpt-5.4'
+        const model = getPrimaryOpenAIModel()
+        const modelLog = describeOpenAIModel(model)
         const tLlm = Date.now()
-        logApi('openai', 'generate-blog.extractMainContent start', { model, inputChars: content.length })
+        logApi('openai', 'generate-blog.extractMainContent start', { model: modelLog, inputChars: content.length })
         const extractionResponse = await chatWithFallback(openai, {
             model,
             messages: [
@@ -67,7 +68,7 @@ export async function POST(request: Request) {
         const mainContent = extractionResponse.choices?.[0]?.message?.content || ''
         logOpenAiRawResponseIfEmpty('generate-blog.extractMainContent', mainContent.length, extractionResponse)
         logApi('openai', 'generate-blog.extractMainContent ok', {
-            model,
+            model: modelLog,
             durationMs: Date.now() - tLlm,
             outputChars: mainContent.length,
         })

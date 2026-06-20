@@ -10,12 +10,12 @@ function getRequiredEnv(name: string): string {
 }
 
 const FALLBACK_OPENAI_API_KEY_ENV = 'FALLBACK_OPENAI_API_KEY';
-export const FALLBACK_OPENAI_BASE_URL = process.env.FALLBACK_OPENAI_BASE_URL?.trim() || 'https://api.deepseek.com';
-export const FALLBACK_OPENAI_MODEL = process.env.FALLBACK_OPENAI_MODEL?.trim() || 'deepseek-chat';
+export const FALLBACK_OPENAI_BASE_URL = process.env.FALLBACK_OPENAI_BASE_URL?.trim() || 'http://127.0.0.1:3300/v1';
+export const FALLBACK_OPENAI_MODEL = process.env.FALLBACK_OPENAI_MODEL?.trim() || 'codex-login/gpt-5.5';
 
 const FALLBACK_ANTHROPIC_API_KEY_ENV = 'FALLBACK_ANTHROPIC_API_KEY';
-export const FALLBACK_ANTHROPIC_BASE_URL = process.env.FALLBACK_ANTHROPIC_BASE_URL?.trim() || 'https://api.deepseek.com/anthropic';
-export const FALLBACK_ANTHROPIC_MODEL = process.env.FALLBACK_ANTHROPIC_MODEL?.trim() || 'deepseek-chat';
+export const FALLBACK_ANTHROPIC_BASE_URL = process.env.FALLBACK_ANTHROPIC_BASE_URL?.trim() || 'http://127.0.0.1:3300/v1';
+export const FALLBACK_ANTHROPIC_MODEL = process.env.FALLBACK_ANTHROPIC_MODEL?.trim() || 'codex-login/gpt-5.5';
 export const FALLBACK_ANTHROPIC_API_KEY = process.env[FALLBACK_ANTHROPIC_API_KEY_ENV]?.trim() || '';
 
 let _fallbackOpenAI: OpenAI | null = null;
@@ -36,19 +36,33 @@ export function getFallbackOpenAI(): OpenAI {
 }
 
 type NonStreamingParams = OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming;
+export type PrimaryChatParams = Omit<NonStreamingParams, 'model'> & { model?: string };
+
+export function getPrimaryOpenAIModel(envName = 'OPENAI_MODEL'): string | undefined {
+    return process.env[envName]?.trim() || undefined;
+}
+
+export function describeOpenAIModel(model: string | undefined): string {
+    return model ?? '(default)';
+}
+
+function withOptionalModel(params: PrimaryChatParams): NonStreamingParams {
+    const { model, ...rest } = params;
+    return (model ? { ...rest, model } : rest) as NonStreamingParams;
+}
 
 /**
  * Calls openai.chat.completions.create with the given params.
- * On error, retries once using the DeepSeek fallback client with model=deepseek-chat.
+ * On error, retries once using the configured OpenAI-compatible fallback.
  */
 export async function chatWithFallback(
     openai: OpenAI,
-    params: NonStreamingParams
+    params: PrimaryChatParams
 ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
     try {
-        return await openai.chat.completions.create({ ...params, stream: false });
+        return await openai.chat.completions.create({ ...withOptionalModel(params), stream: false });
     } catch (primaryErr) {
-        console.warn('[llm-fallback] Primary OpenAI call failed, retrying with DeepSeek fallback:', primaryErr);
+        console.warn('[llm-fallback] Primary OpenAI call failed, retrying with OpenAI-compatible fallback:', primaryErr);
         const response = await getFallbackOpenAI().chat.completions.create({
             ...params,
             model: FALLBACK_OPENAI_MODEL,
@@ -56,7 +70,7 @@ export async function chatWithFallback(
         });
         const content = response.choices?.[0]?.message?.content ?? '';
         logApi('openai', 'llm fallback response', {
-            primaryModel: typeof params.model === 'string' ? params.model : String(params.model),
+            primaryModel: describeOpenAIModel(params.model),
             fallbackModel: FALLBACK_OPENAI_MODEL,
             contentChars: content.length,
             contentPreview: previewText(content),

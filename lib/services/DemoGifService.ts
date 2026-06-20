@@ -5,7 +5,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import { chromium } from 'playwright';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from './api-logger';
-import { chatWithFallback } from '../llm-fallback';
+import { chatWithFallback, describeOpenAIModel, getPrimaryOpenAIModel } from '../llm-fallback';
 
 // Resolve node_modules bundles using process.cwd() (compatible with both ESM and CJS/Jest)
 const NODE_MODULES = path.join(process.cwd(), 'node_modules');
@@ -65,10 +65,11 @@ Rules:
     const htmlSnippet = demoHtml.substring(0, 4000);
     const markdownSnippet = markdown.substring(0, 2000);
 
-    const model = process.env.OPENAI_MODEL ?? 'gpt-5.4';
+    const model = getPrimaryOpenAIModel();
+    const modelLog = describeOpenAIModel(model);
     const t0 = Date.now();
     logApi('openai', 'DemoGifService.planInteractionSteps start', {
-        model,
+        model: modelLog,
         markdownChars: markdown.length,
         demoHtmlChars: demoHtml.length,
     });
@@ -91,7 +92,7 @@ Rules:
         const parsed = JSON.parse(raw) as { steps?: InteractionStep[] };
         const steps = Array.isArray(parsed.steps) ? parsed.steps : [];
         logApi('openai', 'DemoGifService.planInteractionSteps ok', {
-            model,
+            model: modelLog,
             durationMs: Date.now() - t0,
             stepCount: steps.length,
         });
@@ -99,7 +100,7 @@ Rules:
     } catch (err) {
         console.warn('[DemoGifService] planInteractionSteps failed:', err);
         logApiError('openai', 'DemoGifService.planInteractionSteps failed', err, {
-            model,
+            model: modelLog,
             durationMs: Date.now() - t0,
         });
         return [{ type: 'wait', duration: 1000, description: 'Wait for page' }];

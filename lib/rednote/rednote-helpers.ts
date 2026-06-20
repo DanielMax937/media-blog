@@ -5,7 +5,7 @@ import fs from 'fs';
 import { scrapeUrlBodyText } from '@/lib/services/chrome-devtools-scrape';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from '@/lib/services/api-logger';
 import { uploadToBitstripe } from '@/lib/services/BitstripeUploader';
-import { chatWithFallback } from '@/lib/llm-fallback';
+import { chatWithFallback, describeOpenAIModel, getPrimaryOpenAIModel } from '@/lib/llm-fallback';
 
 export async function scrapeUrl(url: string): Promise<string> {
     logApi('browser', 'rednote.scrapeUrl start', { url });
@@ -26,9 +26,10 @@ export async function scrapeUrl(url: string): Promise<string> {
 }
 
 export async function extractMainContent(openai: OpenAI, raw: string): Promise<string> {
-    const model = process.env.OPENAI_MODEL ?? 'gpt-5.4';
+    const model = getPrimaryOpenAIModel();
+    const modelLog = describeOpenAIModel(model);
     const t0 = Date.now();
-    logApi('openai', 'rednote.extractMainContent start', { model, inputChars: raw.length });
+    logApi('openai', 'rednote.extractMainContent start', { model: modelLog, inputChars: raw.length });
     try {
         const response = await chatWithFallback(openai, {
             model,
@@ -47,14 +48,14 @@ export async function extractMainContent(openai: OpenAI, raw: string): Promise<s
         const text = response.choices?.[0]?.message?.content ?? '';
         logOpenAiRawResponseIfEmpty('rednote.extractMainContent', text.length, response);
         logApi('openai', 'rednote.extractMainContent ok', {
-            model,
+            model: modelLog,
             durationMs: Date.now() - t0,
             outputChars: text.length,
         });
         return text;
     } catch (err) {
         logApiError('openai', 'rednote.extractMainContent failed', err, {
-            model,
+            model: modelLog,
             durationMs: Date.now() - t0,
         });
         throw err;

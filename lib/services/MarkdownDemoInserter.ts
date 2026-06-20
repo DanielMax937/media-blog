@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from './api-logger';
-import { chatWithFallback } from '../llm-fallback';
+import { chatWithFallback, describeOpenAIModel, getPrimaryOpenAIModel } from '../llm-fallback';
 
 export interface DemoInsertionSlot {
     /** The exact placeholder text to replace in the markdown */
@@ -80,10 +80,11 @@ Rules:
 - Return at most 3 insertions
 - "afterText" must be verbatim text from the markdown`;
 
-    const model = process.env.OPENAI_MODEL ?? 'gpt-5.4';
+    const model = getPrimaryOpenAIModel();
+    const modelLog = describeOpenAIModel(model);
     const t0 = Date.now();
     logApi('openai', 'MarkdownDemoInserter.findInsertionPointsViaLlm start', {
-        model,
+        model: modelLog,
         markdownChars: markdown.length,
     });
     try {
@@ -105,7 +106,7 @@ Rules:
 
         if (!Array.isArray(parsed.insertions) || parsed.insertions.length === 0) {
             logApi('openai', 'MarkdownDemoInserter.findInsertionPointsViaLlm empty insertions', {
-                model,
+                model: modelLog,
                 durationMs: Date.now() - t0,
             });
             return [];
@@ -120,7 +121,7 @@ Rules:
             };
         });
         logApi('openai', 'MarkdownDemoInserter.findInsertionPointsViaLlm ok', {
-            model,
+            model: modelLog,
             durationMs: Date.now() - t0,
             slotCount: slots.length,
         });
@@ -128,7 +129,7 @@ Rules:
     } catch (err) {
         console.warn('[MarkdownDemoInserter] LLM fallback failed:', err);
         logApiError('openai', 'MarkdownDemoInserter.findInsertionPointsViaLlm failed', err, {
-            model,
+            model: modelLog,
             durationMs: Date.now() - t0,
         });
         return [];

@@ -9,8 +9,9 @@ Next.js App Router 本地服务（默认端口由 `start-bg.sh` 设为 **9300**�
 
 | 变量 | 说明 |
 |------|------|
-| `OPENAI_API_KEY` | OpenAI 兼容 API 密钥（抓取后正文抽取与内容生成） |
-| `OPENAI_BASE_URL` | 可选，自定义 API Base URL |
+| `OPENAI_API_KEY` | OpenAI 兼容 API 密钥；本地 agent-im 网关可使用占位值 |
+| `OPENAI_BASE_URL` | OpenAI 兼容 API Base URL；当前推荐 `http://127.0.0.1:3300/v1` |
+| `OPENAI_MODEL` | 可选，格式 `runner/model`；留空时使用网关默认模型 |
 | `CHROME_DEVTOOLS_MCP_URL` | 可选，local-service **chrome-dev-mcp-server** 根地址，默认 `http://127.0.0.1:9223`（与 `CDS_BASE_URL` 二选一） |
 | `CDS_NAVIGATION_TIMEOUT_MS` | 可选，`new_page` 导航超时（毫秒），默认 `120000` |
 

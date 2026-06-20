@@ -126,7 +126,9 @@ describe('XhsImageService', () => {
             expect(mockCreate).toHaveBeenCalledTimes(2);
         });
 
-        it('uses XHS_PLANNER_MODEL env var (defaults to claude-sonnet-4-6)', async () => {
+        it('omits model by default so the gateway default is used', async () => {
+            const previousModel = process.env.XHS_PLANNER_MODEL;
+            delete process.env.XHS_PLANNER_MODEL;
             const fakePlan = {
                 slug: 'test-model',
                 images: [
@@ -140,16 +142,23 @@ describe('XhsImageService', () => {
             });
             const mockOpenAI = { chat: { completions: { create: mockCreate } } } as unknown as OpenAI;
 
-            await planXhsImages(mockOpenAI, 'content');
+            try {
+                await planXhsImages(mockOpenAI, 'content');
+            } finally {
+                if (previousModel === undefined) {
+                    delete process.env.XHS_PLANNER_MODEL;
+                } else {
+                    process.env.XHS_PLANNER_MODEL = previousModel;
+                }
+            }
 
             expect(mockCreate).toHaveBeenCalledWith(
                 expect.objectContaining({
-                    model: process.env.XHS_PLANNER_MODEL ?? 'claude-sonnet-4-6',
+                    response_format: { type: 'json_object' },
                 })
             );
-            // No response_format required — Claude returns JSON reliably via prompting
             expect(mockCreate).not.toHaveBeenCalledWith(
-                expect.objectContaining({ response_format: { type: 'json_object' } })
+                expect.objectContaining({ model: expect.any(String) })
             );
         });
 
@@ -182,7 +191,7 @@ describe('XhsImageService', () => {
             isEnabled.mockReturnValue(true);
             isConfigured.mockReturnValue(true);
             backendName.mockReturnValue('google-ai');
-            const mockFetch = jest.spyOn(global, 'fetch' as never);
+            const mockFetch = jest.spyOn(globalThis, 'fetch');
 
             const available = await isWebgeminiAvailable();
 
@@ -204,7 +213,7 @@ describe('XhsImageService', () => {
             isEnabled.mockReturnValue(true);
             isConfigured.mockReturnValue(false);
             backendName.mockReturnValue('google-ai');
-            const mockFetch = jest.spyOn(global, 'fetch' as never);
+            const mockFetch = jest.spyOn(globalThis, 'fetch');
 
             const available = await isWebgeminiAvailable();
 
@@ -223,7 +232,7 @@ describe('XhsImageService', () => {
         });
 
         it('checks webgemini health only when direct mode is disabled', async () => {
-            const mockFetch = jest.spyOn(global, 'fetch' as never).mockRejectedValue(new Error('ECONNREFUSED'));
+            const mockFetch = jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
 
             const available = await isWebgeminiAvailable();
 

@@ -36,16 +36,18 @@ npm run lint     # Run ESLint
 - Env: `CHROME_DEVTOOLS_MCP_URL` or `CDS_BASE_URL` (default `http://127.0.0.1:9223`).
 
 ### Key External Dependencies
-- **OpenAI** - Content extraction, translation, and formatting (configured via `.env`)
-- **Claude Agent SDK** - Demo HTML generation for technical content in MediumStrategy
+- **OpenAI-compatible chat endpoint** - Content extraction, translation, formatting, and demo generation (configured via `.env`)
+- **Claude Agent SDK** - Optional demo HTML generation for technical content in MediumStrategy
 - **Playwright** (optional) - Used only by `DemoGifService` for headless GIF recording, not for URL scraping
 
 ## Configuration
 
 ### Environment Variables (`.env`)
-- `OPENAI_BASE_URL` - OpenAI API endpoint
-- `OPENAI_API_KEY` - API key for GPT-4o
-- `ANTHROPIC_API_KEY` - API key for Claude (demo generation)
+- `OPENAI_BASE_URL` - OpenAI-compatible API endpoint, e.g. `http://127.0.0.1:3300/v1`
+- `OPENAI_API_KEY` - API key or local gateway placeholder
+- `OPENAI_MODEL` - Optional `runner/model` override; leave empty to use the gateway default
+- `MEDIUM_DEMO_PROVIDER` - Set to `openai` to route demo generation through the OpenAI-compatible endpoint
+- `ANTHROPIC_API_KEY` - Optional Claude credential if `MEDIUM_DEMO_PROVIDER=claude`
 
 ### Path Aliases
 `@/*` maps to project root for absolute imports

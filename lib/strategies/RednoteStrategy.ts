@@ -4,7 +4,7 @@ import { isWebgeminiAvailable, planXhsImages, generateXhsImages } from '../servi
 import { uploadToBitstripe } from '../services/BitstripeUploader';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from '../services/api-logger';
 import { getImageGenerationBackendName } from '../services/GoogleImageService';
-import { chatWithFallback } from '../llm-fallback';
+import { chatWithFallback, describeOpenAIModel, getPrimaryOpenAIModel } from '../llm-fallback';
 
 export class RednoteStrategy implements BlogStrategy {
     private openai: OpenAI;
@@ -14,9 +14,10 @@ export class RednoteStrategy implements BlogStrategy {
     }
 
     async generate(content: string): Promise<{ content: string; imageUrls?: string[] }> {
-        const model = process.env.OPENAI_MODEL ?? 'gpt-5.4';
+        const model = getPrimaryOpenAIModel();
+        const modelLog = describeOpenAIModel(model);
         const tStyle = Date.now();
-        logApi('openai', 'RednoteStrategy.styleMarkdown start', { model, inputChars: content.length });
+        logApi('openai', 'RednoteStrategy.styleMarkdown start', { model: modelLog, inputChars: content.length });
         let markdown = '';
         try {
             const styleResponse = await chatWithFallback(this.openai, {
@@ -48,13 +49,13 @@ export class RednoteStrategy implements BlogStrategy {
             markdown = styleResponse.choices?.[0]?.message?.content || '';
             logOpenAiRawResponseIfEmpty('RednoteStrategy.styleMarkdown', markdown.length, styleResponse);
             logApi('openai', 'RednoteStrategy.styleMarkdown ok', {
-                model,
+                model: modelLog,
                 durationMs: Date.now() - tStyle,
                 outputChars: markdown.length,
             });
         } catch (err) {
             logApiError('openai', 'RednoteStrategy.styleMarkdown failed', err, {
-                model,
+                model: modelLog,
                 durationMs: Date.now() - tStyle,
             });
             throw err;

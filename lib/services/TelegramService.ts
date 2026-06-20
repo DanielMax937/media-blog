@@ -76,6 +76,7 @@ export async function sendJobNotification(params: {
     mdUrl?: string | null;
     imageUrls?: string[];
     artifactUrls?: string[];
+    localArtifactPaths?: string[];
     error?: string | null;
 }): Promise<void> {
     const lines = [
@@ -94,6 +95,11 @@ export async function sendJobNotification(params: {
     if (artifacts?.length) {
         lines.push(`artifacts (${artifacts.length}):`);
         for (const url of artifacts) lines.push(url);
+    }
+
+    if (params.localArtifactPaths?.length) {
+        lines.push(`local artifacts (${params.localArtifactPaths.length}):`);
+        for (const localPath of params.localArtifactPaths) lines.push(localPath);
     }
 
     if (params.error) lines.push(`error: ${params.error}`);

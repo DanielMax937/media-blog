@@ -9,7 +9,7 @@ import { findDemoInsertionSlots, replaceSlotInMarkdown } from '../services/Markd
 import { planInteractionSteps, generateGifForDemo } from '../services/DemoGifService';
 import { generateCoverImage } from '../services/CoverImageService';
 import { logApi, logOpenAiRawResponseIfEmpty } from '../services/api-logger';
-import { chatWithFallback, getFallbackOpenAI, FALLBACK_OPENAI_MODEL, FALLBACK_ANTHROPIC_API_KEY, FALLBACK_ANTHROPIC_BASE_URL, FALLBACK_ANTHROPIC_MODEL } from '../llm-fallback';
+import { chatWithFallback, describeOpenAIModel, getFallbackOpenAI, getPrimaryOpenAIModel, FALLBACK_ANTHROPIC_MODEL } from '../llm-fallback';
 
 export class MediumStrategy implements BlogStrategy {
     private openai: OpenAI;
@@ -199,7 +199,7 @@ After writing, output the complete HTML content.`,
             return { content: demo, filename };
         }
 
-        let demo = demoContent.replace(/^```html\s*/i, '').replace(/\s*```$/i, '').trim();
+        const demo = demoContent.replace(/^```html\s*/i, '').replace(/\s*```$/i, '').trim();
 
         if (!fs.existsSync(demosDir)) {
             fs.mkdirSync(demosDir, { recursive: true });
@@ -241,7 +241,8 @@ After writing, output the complete HTML content.`,
         }
 
         const client = openaiClient ?? this.openai;
-        const demoModel = modelOverride ?? 'gpt-5.4';
+        const demoModel = modelOverride ?? getPrimaryOpenAIModel();
+        const demoModelLog = describeOpenAIModel(demoModel);
         const systemPrompt = `You are a frontend developer creating an educational demo page. Return only a complete self-contained HTML document.
 
 STRUCTURE REQUIREMENTS:
@@ -268,9 +269,9 @@ TECHNICAL REQUIREMENTS:
 
         const userPrompt = `Create a demo page for this article:\n\n${englishContent}`;
 
-        let t0 = Date.now();
+        const t0 = Date.now();
         logApi('openai', 'MediumStrategy.generateDemo start', {
-            model: demoModel,
+            model: demoModelLog,
             inputChars: englishContent.length,
         });
         const demoResponse = await chatWithFallback(client, {
@@ -283,7 +284,7 @@ TECHNICAL REQUIREMENTS:
         let demo = demoResponse.choices?.[0]?.message?.content || '';
         logOpenAiRawResponseIfEmpty('MediumStrategy.generateDemo', demo.length, demoResponse);
         logApi('openai', 'MediumStrategy.generateDemo ok', {
-            model: demoModel,
+            model: demoModelLog,
             durationMs: Date.now() - t0,
             outputChars: demo.length,
         });
@@ -314,9 +315,10 @@ TECHNICAL REQUIREMENTS:
     }
 
     async generate(content: string): Promise<{ content: string; demo?: string }> {
-        const model = process.env.OPENAI_MODEL ?? 'gpt-5.4';
+        const model = getPrimaryOpenAIModel();
+        const modelLog = describeOpenAIModel(model);
         let t0 = Date.now();
-        logApi('openai', 'MediumStrategy.translate start', { model, inputChars: content.length });
+        logApi('openai', 'MediumStrategy.translate start', { model: modelLog, inputChars: content.length });
         const translateResponse = await chatWithFallback(this.openai, {
             model,
             messages: [
@@ -333,13 +335,13 @@ TECHNICAL REQUIREMENTS:
         const englishContent = translateResponse.choices?.[0]?.message?.content || '';
         logOpenAiRawResponseIfEmpty('MediumStrategy.translate', englishContent.length, translateResponse);
         logApi('openai', 'MediumStrategy.translate ok', {
-            model,
+            model: modelLog,
             durationMs: Date.now() - t0,
             outputChars: englishContent.length,
         });
 
         t0 = Date.now();
-        logApi('openai', 'MediumStrategy.detectTechnical start', { model });
+        logApi('openai', 'MediumStrategy.detectTechnical start', { model: modelLog });
         const detectResponse = await chatWithFallback(this.openai, {
             model,
             messages: [
@@ -357,7 +359,7 @@ TECHNICAL REQUIREMENTS:
         logOpenAiRawResponseIfEmpty('MediumStrategy.detectTechnical', detectMsg.trim().length, detectResponse);
         const isTechnical = detectMsg.trim().toUpperCase().includes('YES');
         logApi('openai', 'MediumStrategy.detectTechnical ok', {
-            model,
+            model: modelLog,
             durationMs: Date.now() - t0,
             isTechnical: !!isTechnical,
             detectPreview: detectMsg.replace(/\s+/g, ' ').trim().slice(0, 200),
@@ -379,7 +381,7 @@ TECHNICAL REQUIREMENTS:
 
         t0 = Date.now();
         logApi('openai', 'MediumStrategy.formatArticle start', {
-            model,
+            model: modelLog,
             isTechnical: !!isTechnical,
             englishChars: englishContent.length,
         });
@@ -419,7 +421,7 @@ Example demo screenshot: ![Screenshot showing the interactive button with hover 
         let mediumContent = formatResponse.choices?.[0]?.message?.content || '';
         logOpenAiRawResponseIfEmpty('MediumStrategy.formatArticle', mediumContent.length, formatResponse);
         logApi('openai', 'MediumStrategy.formatArticle ok', {
-            model,
+            model: modelLog,
             durationMs: Date.now() - t0,
             outputChars: mediumContent.length,
         });
@@ -438,6 +440,7 @@ Example demo screenshot: ![Screenshot showing the interactive button with hover 
             const demoPublicUrl = `https://www.bitstripe.cn/files/${demoFilename}`;
 
             // 7. Generate demo GIFs for each insertion slot and embed into markdown
+            mediumContent = this.ensureDemoScreenshotPlaceholder(mediumContent);
             mediumContent = await this.injectDemoGifs(
                 mediumContent,
                 demo,
@@ -467,6 +470,20 @@ Explore more demos from my previous articles in the **[Demo Gallery](https://www
         mediumContent = await this.addCoverImage(mediumContent);
 
         return { content: mediumContent, demo };
+    }
+
+    private ensureDemoScreenshotPlaceholder(markdown: string): string {
+        if (markdown.includes('DEMO_SCREENSHOT_PLACEHOLDER')) return markdown;
+
+        const placeholder =
+            '![Demo showing the interactive result of the preceding code](DEMO_SCREENSHOT_PLACEHOLDER)';
+        const codeBlock = markdown.match(/```[\s\S]*?```/);
+        if (!codeBlock || codeBlock.index == null) {
+            return `${markdown.trimEnd()}\n\n${placeholder}`;
+        }
+
+        const insertAt = codeBlock.index + codeBlock[0].length;
+        return `${markdown.slice(0, insertAt)}\n\n${placeholder}${markdown.slice(insertAt)}`;
     }
 
     /**

@@ -10,7 +10,7 @@ import {
     isGoogleImageGenerationConfigured,
     isGoogleImageGenerationEnabled,
 } from './GoogleImageService';
-import { chatWithFallback } from '../llm-fallback';
+import { chatWithFallback, describeOpenAIModel, getPrimaryOpenAIModel } from '../llm-fallback';
 
 const WEBGEMINI_BASE = process.env.WEBGEMINI_URL ?? 'http://127.0.0.1:8200';
 const POLL_INTERVAL_MS = 5000;
@@ -95,18 +95,19 @@ function validatePlan(plan: unknown): XhsImagePlan {
 }
 
 /**
- * Uses Claude (via OpenAI-compatible API) to analyse the markdown and produce
- * XHS-style image prompts.  Returns a plan with a slug and an ordered list of
- * image descriptors.  Retries once with a stricter prompt if the first
- * response is not valid JSON.
+ * Uses the configured OpenAI-compatible chat endpoint to analyse the markdown
+ * and produce XHS-style image prompts. Returns a plan with a slug and an
+ * ordered list of image descriptors. Retries once with a stricter prompt if
+ * the first response is not valid JSON.
  *
  * response_format json_object mode is used when the model is not Claude to enforce
  * strict JSON output. Claude reliably follows JSON format instructions natively.
  */
 export async function planXhsImages(openai: OpenAI, markdown: string): Promise<XhsImagePlan> {
-    const model = process.env.XHS_PLANNER_MODEL ?? 'claude-sonnet-4-6';
+    const model = getPrimaryOpenAIModel('XHS_PLANNER_MODEL');
+    const modelLog = describeOpenAIModel(model);
     // Enable JSON mode for non-Claude models (gpt-* variants) to avoid freeform text responses
-    const isClaudeModel = model.toLowerCase().startsWith('claude');
+    const isClaudeModel = model?.toLowerCase().startsWith('claude') ?? false;
     const responseFormat = isClaudeModel ? undefined : { type: 'json_object' as const };
 
     const systemPrompt = `You are a Xiaohongshu visual strategist. Analyse the given Xiaohongshu post and produce an image prompt plan in pure JSON — no prose, no markdown fences, no explanations.
@@ -135,7 +136,7 @@ Rules:
         ];
         const t0 = Date.now();
         logApi('openai', 'planXhsImages chat.completions.create', {
-            model,
+            model: modelLog,
             attempt: extraInstruction ? 'retry' : 'first',
             markdownChars: markdown.length,
         });
@@ -148,7 +149,7 @@ Rules:
         const content = resp.choices?.[0]?.message?.content ?? '';
         logOpenAiRawResponseIfEmpty('planXhsImages callLLM', content.length, resp);
         logApi('openai', 'planXhsImages chat.completions ok', {
-            model,
+            model: modelLog,
             durationMs: Date.now() - t0,
             responseChars: content.length,
         });

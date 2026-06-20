@@ -6,6 +6,14 @@ import fs from 'fs';
 const DB_DIR = path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DB_DIR, 'blog2media.db');
 
+// JSONL mirror of generation_log inserts.
+// External monitoring (e.g. cron health-check) reads this file instead of
+// hitting the live SQLite DB, which avoids WAL/SHM lock contention with the
+// long-running next-server process.
+// Override path with BLOG2MEDIA_GENERATION_LOG_FILE if needed (used in tests).
+const GENERATION_LOG_FILE =
+    process.env.BLOG2MEDIA_GENERATION_LOG_FILE ?? path.join(DB_DIR, 'generation-log.jsonl');
+
 export type GenerationPlatform = 'rednote' | 'medium' | 'futures';
 
 /** One generation run logged to SQLite. */
@@ -32,6 +40,37 @@ function getDb(): Database.Database {
 
     // Enable WAL for better concurrent read performance
     _db.pragma('journal_mode = WAL');
+
+    // Auto-checkpoint every 100 pages to prevent WAL file from growing unbounded.
+    // Without this, the WAL file can balloon to several MBs over weeks of uptime,
+    // which causes external sqlite3 CLI readers (e.g. cron health-checks) to
+    // race / time out under lock contention. 100 pages ≈ 400KB, a good balance
+    // between checkpoint frequency and write amplification.
+    _db.pragma('wal_autocheckpoint = 100');
+
+    // Run a TRUNCATE checkpoint at startup to reset any oversized WAL left
+    // behind by a previous process / crash.
+    try {
+        _db.pragma('wal_checkpoint(TRUNCATE)');
+    } catch {
+        // Best-effort; ignore if another process is mid-write.
+    }
+
+    // Make sure the WAL is flushed on graceful shutdown so no unflushed pages
+    // are left in the WAL file when the process exits.
+    const closeOnExit = () => {
+        try {
+            if (_db && _db.open) {
+                _db.pragma('wal_checkpoint(TRUNCATE)');
+                _db.close();
+            }
+        } catch {
+            // Ignore — process is going down anyway.
+        }
+    };
+    process.once('SIGINT', closeOnExit);
+    process.once('SIGTERM', closeOnExit);
+    process.once('beforeExit', closeOnExit);
 
     _db.exec(`
         CREATE TABLE IF NOT EXISTS generation_log (
@@ -115,7 +154,51 @@ export function logGeneration(
         'INSERT INTO generation_log (source_url, platform, md_url, image_urls) VALUES (?, ?, ?, ?)'
     );
     const result = stmt.run(sourceUrl, platform, mdUrl, JSON.stringify(imageUrls));
-    return result.lastInsertRowid as number;
+    const id = result.lastInsertRowid as number;
+    appendGenerationLogFile({ id, source_url: sourceUrl, platform, md_url: mdUrl, image_urls: imageUrls });
+    return id;
+}
+
+/**
+ * Append one JSONL line to the generation-log mirror file.
+ *
+ * Fields match `generation_log` row semantics, plus `created_at` in
+ * Asia/Shanghai (UTC+8) for easier `date(...) = today` matching in shell.
+ *
+ * Errors are swallowed: monitoring is best-effort and must never break the
+ * primary DB write path.
+ */
+function appendGenerationLogFile(entry: {
+    id: number;
+    source_url: string;
+    platform: GenerationPlatform;
+    md_url: string;
+    image_urls: string[];
+}): void {
+    try {
+        if (!fs.existsSync(DB_DIR)) {
+            fs.mkdirSync(DB_DIR, { recursive: true });
+        }
+        // Asia/Shanghai (UTC+8) ISO timestamp for easy day-bucketing in
+        // shell scripts: `date(created_at_cst, 'start of day')` style.
+        const cst = new Date(Date.now() + 8 * 60 * 60 * 1000)
+            .toISOString()
+            .replace('Z', '+08:00');
+        const line = JSON.stringify({
+            id: entry.id,
+            platform: entry.platform,
+            source_url: entry.source_url,
+            md_url: entry.md_url,
+            image_urls: entry.image_urls,
+            created_at_cst: cst,
+        }) + '\n';
+        fs.appendFileSync(GENERATION_LOG_FILE, line, { encoding: 'utf8' });
+    } catch (err) {
+        // Never fail the primary write; just emit a console warning so it
+        // shows up in blog2media.log without breaking the job.
+        // eslint-disable-next-line no-console
+        console.warn('[generation-log mirror] append failed:', err);
+    }
 }
 
 /**
@@ -136,6 +219,32 @@ export function getLogsBySourceUrl(sourceUrl: string): GenerationLog[] {
     return db
         .prepare('SELECT * FROM generation_log WHERE source_url = ? ORDER BY id DESC')
         .all(sourceUrl) as GenerationLog[];
+}
+
+/**
+ * Fetch generation logs for a calendar date in Asia/Shanghai (CST, UTC+8).
+ *
+ * The DB stores `created_at` as UTC via `datetime('now')`.  To map a CST
+ * calendar day to the correct UTC range we add the +8 h offset:
+ *   CST day [D 00:00, D+1 00:00) → UTC [D-8h, D+16h)
+ *
+ * Returns rows grouped by platform with their md_url values.
+ */
+export function getLogsByDate(dateCst: string): {
+    platform: GenerationPlatform;
+    md_url: string;
+}[] {
+    const db = getDb();
+    return db
+        .prepare(
+            `SELECT platform, md_url
+             FROM generation_log
+             WHERE created_at >= datetime(?, '-8 hours')
+               AND created_at <  datetime(?, '+16 hours')
+               AND md_url != ''
+             ORDER BY platform, id`
+        )
+        .all(dateCst, dateCst) as { platform: GenerationPlatform; md_url: string }[];
 }
 
 /** True if `generation_log` already has at least one row for this source URL + platform. */

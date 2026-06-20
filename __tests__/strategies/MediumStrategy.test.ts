@@ -81,6 +81,7 @@ describe('MediumStrategy', () => {
         const result = await strategy.generate('Technical article about CSS');
 
         expect(result.content).toBeTruthy();
+        expect(mockFindSlots.mock.calls[0][0]).toContain('DEMO_SCREENSHOT_PLACEHOLDER');
         expect(mockPlanSteps).not.toHaveBeenCalled();
     });
 

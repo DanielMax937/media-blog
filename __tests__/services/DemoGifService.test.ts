@@ -136,15 +136,27 @@ describe('DemoGifService', () => {
             expect(result).toHaveLength(0);
         });
 
-        it('calls OpenAI with json_object format and OPENAI_MODEL default', async () => {
+        it('calls OpenAI with json_object format and omits model by default', async () => {
+            const previousModel = process.env.OPENAI_MODEL;
+            delete process.env.OPENAI_MODEL;
             const mockCreate = jest.fn().mockResolvedValue({
                 choices: [{ message: { content: JSON.stringify({ steps: [] }) } }],
             });
             const openai = { chat: { completions: { create: mockCreate } } } as unknown as OpenAI;
-            await planInteractionSteps('md', '<html></html>', 'ctx', openai);
-            const expectedModel = process.env.OPENAI_MODEL ?? 'gpt-5.4';
+            try {
+                await planInteractionSteps('md', '<html></html>', 'ctx', openai);
+            } finally {
+                if (previousModel === undefined) {
+                    delete process.env.OPENAI_MODEL;
+                } else {
+                    process.env.OPENAI_MODEL = previousModel;
+                }
+            }
             expect(mockCreate).toHaveBeenCalledWith(
-                expect.objectContaining({ response_format: { type: 'json_object' }, model: expectedModel })
+                expect.objectContaining({ response_format: { type: 'json_object' } })
+            );
+            expect(mockCreate).not.toHaveBeenCalledWith(
+                expect.objectContaining({ model: expect.any(String) })
             );
         });
     });
