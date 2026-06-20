@@ -9,6 +9,8 @@ import {
 import { sendJobNotification } from '@/lib/services/TelegramService';
 import { extractMainContent, scrapeUrl, writeMdAndUpload } from '@/lib/rednote/rednote-helpers';
 import { extractAllUrls, extractImageUrls } from '@/lib/markdown-extract-urls';
+import { writeAstroMicroMdxFromMedium } from '@/lib/services/AstroMicroMdxService';
+import { commitAndPushAstroMicroPost } from '@/lib/services/AstroMicroGitService';
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
@@ -36,10 +38,57 @@ export async function runMediumJob(jobId: string, requestUrl: string): Promise<v
 
         const mainContent = await extractMainContent(openai, rawContent);
         const strategy = new MediumStrategy(openai);
-        const { content: markdown } = await strategy.generate(mainContent);
+        const { content: markdown, demo } = await strategy.generate(mainContent);
         const imageUrls = extractImageUrls(markdown);
         const artifactUrls = extractAllUrls(markdown);
         const mdUrl = await writeMdAndUpload(markdown, 'medium');
+        let mdxLocalPath: string | null = null;
+
+        try {
+            const mdxResult = writeAstroMicroMdxFromMedium({
+                markdown,
+                demoHtml: demo,
+                imageUrls,
+                sourceUrl: requestUrl,
+            });
+            mdxLocalPath = mdxResult.filePath;
+            logApi('api', 'medium mdx copied to astro-micro', {
+                jobId,
+                url: requestUrl,
+                slug: mdxResult.slug,
+                filePath: mdxResult.filePath,
+            });
+
+            try {
+                const publishResult = await commitAndPushAstroMicroPost({
+                    postDir: mdxResult.postDir,
+                    slug: mdxResult.slug,
+                    sourceUrl: requestUrl,
+                });
+                logApi('api', 'medium mdx published to astro-micro git', {
+                    jobId,
+                    url: requestUrl,
+                    slug: mdxResult.slug,
+                    committed: publishResult.committed,
+                    pushed: publishResult.pushed,
+                    commitSha: publishResult.commitSha ?? null,
+                    reason: publishResult.reason ?? null,
+                });
+            } catch (publishError) {
+                logApiError('api', 'medium mdx git publish failed', publishError, {
+                    jobId,
+                    url: requestUrl,
+                    slug: mdxResult.slug,
+                    filePath: mdxResult.filePath,
+                });
+            }
+        } catch (mdxError) {
+            logApiError('api', 'medium mdx copy failed', mdxError, {
+                jobId,
+                url: requestUrl,
+            });
+        }
+
         const generationLogId = logGeneration(requestUrl, mdUrl, imageUrls, 'medium');
 
         updateMediumJob(jobId, {
@@ -56,9 +105,10 @@ export async function runMediumJob(jobId: string, requestUrl: string): Promise<v
             mdUrl,
             imageCount: imageUrls.length,
             markdownChars: markdown.length,
+            mdxLocalPath,
             generationLogId,
         });
-        await notifyMediumCompletion(jobId, requestUrl, mdUrl, imageUrls, artifactUrls);
+        await notifyMediumCompletion(jobId, requestUrl, mdUrl, imageUrls, artifactUrls, mdxLocalPath);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error('[runMediumJob]', jobId, error);
@@ -74,6 +124,7 @@ async function notifyMediumCompletion(
     mdUrl: string,
     imageUrls: string[],
     artifactUrls: string[],
+    mdxLocalPath: string | null,
 ): Promise<void> {
     try {
         await sendJobNotification({
@@ -84,6 +135,7 @@ async function notifyMediumCompletion(
             mdUrl,
             imageUrls,
             artifactUrls,
+            localArtifactPaths: mdxLocalPath ? [mdxLocalPath] : undefined,
         });
     } catch (error) {
         logApiError('api', 'medium completion notification failed', error, {
