@@ -5,6 +5,7 @@ export interface AstroMicroGitPublishParams {
     postDir: string;
     slug: string;
     sourceUrl: string;
+    additionalPaths?: string[];
     branch?: string;
     remote?: string;
 }
@@ -17,6 +18,7 @@ export interface AstroMicroGitPublishResult {
     remote: string;
     repoRoot?: string;
     relativePostDir?: string;
+    relativePaths?: string[];
     commitSha?: string;
     reason?: 'disabled' | 'no_changes';
 }
@@ -88,11 +90,17 @@ export async function commitAndPushAstroMicroPost(
     }
 
     const relativePostDir = ensureRelativePathInsideRepo(repoRoot, params.postDir);
+    const relativePaths = [
+        relativePostDir,
+        ...(params.additionalPaths ?? []).map((targetPath) =>
+            ensureRelativePathInsideRepo(repoRoot, targetPath)
+        ),
+    ].filter((relativePath, index, paths) => paths.indexOf(relativePath) === index);
 
     await execGit(['pull', '--ff-only', remote, branch], repoRoot);
-    await execGit(['add', '--', relativePostDir], repoRoot);
+    await execGit(['add', '--', ...relativePaths], repoRoot);
 
-    const stagedFiles = (await execGit(['diff', '--cached', '--name-only', '--', relativePostDir], repoRoot))
+    const stagedFiles = (await execGit(['diff', '--cached', '--name-only', '--', ...relativePaths], repoRoot))
         .stdout
         .trim();
     if (!stagedFiles) {
@@ -104,6 +112,7 @@ export async function commitAndPushAstroMicroPost(
             remote,
             repoRoot,
             relativePostDir,
+            relativePaths,
             reason: 'no_changes',
         };
     }
@@ -125,7 +134,7 @@ export async function commitAndPushAstroMicroPost(
             '-m',
             `Source: ${params.sourceUrl}`,
             '--',
-            relativePostDir,
+            ...relativePaths,
         ],
         repoRoot,
         commitEnv
@@ -142,6 +151,7 @@ export async function commitAndPushAstroMicroPost(
         remote,
         repoRoot,
         relativePostDir,
+        relativePaths,
         commitSha,
     };
 }

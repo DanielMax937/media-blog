@@ -11,6 +11,7 @@ import { extractMainContent, scrapeUrl, writeMdAndUpload } from '@/lib/rednote/r
 import { extractAllUrls, extractImageUrls } from '@/lib/markdown-extract-urls';
 import { writeAstroMicroMdxFromMedium } from '@/lib/services/AstroMicroMdxService';
 import { commitAndPushAstroMicroPost } from '@/lib/services/AstroMicroGitService';
+import { updateAstroMicroSitemap } from '@/lib/services/AstroMicroSitemapService';
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
@@ -59,11 +60,34 @@ export async function runMediumJob(jobId: string, requestUrl: string): Promise<v
                 filePath: mdxResult.filePath,
             });
 
+            const additionalPublishPaths: string[] = [];
+            try {
+                const sitemapResult = updateAstroMicroSitemap({
+                    blogDir: mdxResult.blogDir,
+                });
+                additionalPublishPaths.push(sitemapResult.sitemapPath);
+                logApi('api', 'medium astro-micro sitemap updated', {
+                    jobId,
+                    url: requestUrl,
+                    sitemapPath: sitemapResult.sitemapPath,
+                    urlCount: sitemapResult.urlCount,
+                    blogUrlCount: sitemapResult.blogUrlCount,
+                    updated: sitemapResult.updated,
+                });
+            } catch (sitemapError) {
+                logApiError('api', 'medium astro-micro sitemap update failed', sitemapError, {
+                    jobId,
+                    url: requestUrl,
+                    slug: mdxResult.slug,
+                });
+            }
+
             try {
                 const publishResult = await commitAndPushAstroMicroPost({
                     postDir: mdxResult.postDir,
                     slug: mdxResult.slug,
                     sourceUrl: requestUrl,
+                    additionalPaths: additionalPublishPaths,
                 });
                 logApi('api', 'medium mdx published to astro-micro git', {
                     jobId,

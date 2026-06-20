@@ -43,7 +43,7 @@ describe('AstroMicroGitService', () => {
         mockGitResponses({
             'rev-parse --show-toplevel': '/repo/astro-micro\n',
             'rev-parse --abbrev-ref HEAD': 'main\n',
-            'diff --cached --name-only -- src/content/blog/2026-06-20':
+            'diff --cached --name-only -- src/content/blog/2026-06-20 public/sitemap.xml':
                 'src/content/blog/2026-06-20/index.mdx\n',
             'rev-parse --short HEAD': 'abc1234\n',
         });
@@ -52,6 +52,7 @@ describe('AstroMicroGitService', () => {
             postDir: '/repo/astro-micro/src/content/blog/2026-06-20',
             slug: '2026-06-20',
             sourceUrl: 'https://example.com/article',
+            additionalPaths: ['/repo/astro-micro/public/sitemap.xml'],
         });
 
         expect(result).toMatchObject({
@@ -61,6 +62,7 @@ describe('AstroMicroGitService', () => {
             branch: 'main',
             remote: 'origin',
             relativePostDir: 'src/content/blog/2026-06-20',
+            relativePaths: ['src/content/blog/2026-06-20', 'public/sitemap.xml'],
             commitSha: 'abc1234',
         });
 
@@ -72,7 +74,7 @@ describe('AstroMicroGitService', () => {
         );
         expect(mockExecFile).toHaveBeenCalledWith(
             'git',
-            ['add', '--', 'src/content/blog/2026-06-20'],
+            ['add', '--', 'src/content/blog/2026-06-20', 'public/sitemap.xml'],
             expect.objectContaining({ cwd: '/repo/astro-micro' }),
             expect.any(Function)
         );
@@ -86,6 +88,7 @@ describe('AstroMicroGitService', () => {
                 'Source: https://example.com/article',
                 '--',
                 'src/content/blog/2026-06-20',
+                'public/sitemap.xml',
             ],
             expect.objectContaining({
                 cwd: '/repo/astro-micro',
