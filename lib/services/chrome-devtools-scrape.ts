@@ -16,6 +16,7 @@
 import fs from 'fs';
 import path from 'path';
 import { logApi } from '@/lib/services/api-logger';
+import { getChromiumLaunchOptions } from '@/lib/services/PlaywrightBrowser';
 
 const CDS_BASE =
     process.env.CHROME_DEVTOOLS_MCP_URL?.replace(/\/$/, '') ||
@@ -100,6 +101,17 @@ function envMs(key: string, fallback: number): number {
     return Math.floor(n);
 }
 
+function evaluateScriptParams(pageId: number | null, script: string): Record<string, unknown> {
+    if (pageId == null) {
+        throw new Error('Chrome DevTools MCP evaluate_script requires pageId, but no pageId was found');
+    }
+    return {
+        pageId,
+        function: script,
+        waitForStableDom: false,
+    };
+}
+
 function isChromeDevtoolsUnavailableError(err: unknown): boolean {
     const message = err instanceof Error ? err.message : String(err);
     return (
@@ -114,7 +126,7 @@ function isChromeDevtoolsUnavailableError(err: unknown): boolean {
 async function scrapeUrlBodyTextViaPlaywright(url: string): Promise<string> {
     const { chromium } = await import('playwright');
     const navTimeout = envMs('PW_NAVIGATION_TIMEOUT_MS', DEFAULT_NAV_TIMEOUT_MS);
-    const browser = await chromium.launch({ headless: false });
+    const browser = await chromium.launch(getChromiumLaunchOptions(false));
     const page = await browser.newPage();
 
     try {
@@ -136,7 +148,7 @@ async function listV2exJobsTabCountLividTopicUrlsViaPlaywright(jobsTabUrl: strin
     const { chromium } = await import('playwright');
     const navTimeout = envMs('PW_NAVIGATION_TIMEOUT_MS', DEFAULT_NAV_TIMEOUT_MS);
     const postWaitMs = envMs('CDS_V2EX_JOBS_POST_WAIT_MS', DEFAULT_V2EX_JOBS_POST_WAIT_MS);
-    const browser = await chromium.launch({ headless: false });
+    const browser = await chromium.launch(getChromiumLaunchOptions(false));
     const page = await browser.newPage();
 
     try {
@@ -178,7 +190,7 @@ async function listV2exJobsTabCountLividTopicUrlsViaPlaywright(jobsTabUrl: strin
 async function listZhangxinxuCategoryArticleUrlsViaPlaywright(categoryUrl: string): Promise<string[]> {
     const { chromium } = await import('playwright');
     const navTimeout = envMs('PW_NAVIGATION_TIMEOUT_MS', DEFAULT_NAV_TIMEOUT_MS);
-    const browser = await chromium.launch({ headless: false });
+    const browser = await chromium.launch(getChromiumLaunchOptions(false));
     const page = await browser.newPage();
 
     try {
@@ -498,15 +510,16 @@ export async function scrapeUrlBodyText(url: string): Promise<string> {
 
             const evalRes = await cdsPost(
                 '/api/evaluate_script',
-                {
-                    function: `() => {
+                evaluateScriptParams(
+                    pageId,
+                    `() => {
           const el = document.body;
           return JSON.stringify({
             href: location.href,
             text: el ? el.innerText : '',
           });
         }`,
-                },
+                ),
                 evalTimeout,
             );
             const raw = parseEvaluateResultText(evalRes);
@@ -613,8 +626,9 @@ export async function listV2exJobsTabCountLividTopicUrls(
     if (process.env.NODE_ENV !== 'test') {
         const injectRes = await cdsPost(
             '/api/evaluate_script',
-            {
-                function: `() => {
+            evaluateScriptParams(
+                pageId,
+                `() => {
           try {
             window.__BLOG2MEDIA_V2EX_DEBUG__ = { t: Date.now(), href: location.href };
             const marker = document.createElement('script');
@@ -626,7 +640,7 @@ export async function listV2exJobsTabCountLividTopicUrls(
             return 'inject_failed:' + (e && e.message ? e.message : String(e));
           }
         }`,
-            },
+            ),
             evalTimeout,
         );
         const injectOut = parseEvaluateResultText(injectRes).slice(0, 200);
@@ -634,8 +648,9 @@ export async function listV2exJobsTabCountLividTopicUrls(
 
         const diagRes = await cdsPost(
             '/api/evaluate_script',
-            {
-                function: `() => {
+            evaluateScriptParams(
+                pageId,
+                `() => {
           const main = document.querySelector('#Main');
           return JSON.stringify({
             locationHref: location.href,
@@ -648,7 +663,7 @@ export async function listV2exJobsTabCountLividTopicUrls(
             countLividGlobal: document.querySelectorAll('a.count_livid').length,
           });
         }`,
-            },
+            ),
             evalTimeout,
         );
         const diagRaw = parseEvaluateResultText(diagRes);
@@ -671,9 +686,7 @@ export async function listV2exJobsTabCountLividTopicUrls(
         if (shouldWriteV2exDebugHtml()) {
             const htmlRes = await cdsPost(
                 '/api/evaluate_script',
-                {
-                    function: `() => document.documentElement.outerHTML`,
-                },
+                evaluateScriptParams(pageId, `() => document.documentElement.outerHTML`),
                 evalTimeout,
             );
             const fullHtml = parseEvaluateResultText(htmlRes);
@@ -688,8 +701,9 @@ export async function listV2exJobsTabCountLividTopicUrls(
 
     const evalRes = await cdsPost(
         '/api/evaluate_script',
-        {
-            function: `() => {
+        evaluateScriptParams(
+            pageId,
+            `() => {
           const seen = new Set();
           const out = [];
           const base = 'https://www.v2ex.com';
@@ -711,7 +725,7 @@ export async function listV2exJobsTabCountLividTopicUrls(
           }
           return JSON.stringify(out);
         }`,
-        },
+        ),
         evalTimeout,
     );
 
@@ -826,8 +840,9 @@ export async function listZhangxinxuCategoryArticleUrls(
 
             const evalRes = await cdsPost(
                 '/api/evaluate_script',
-                {
-                    function: `() => {
+                evaluateScriptParams(
+                    pageId,
+                    `() => {
           const seen = new Set();
           const out = [];
           const selectors = [
@@ -867,7 +882,7 @@ export async function listZhangxinxuCategoryArticleUrls(
             html: out.length ? '' : document.documentElement.outerHTML,
           });
         }`,
-                },
+                ),
                 evalTimeout,
             );
 

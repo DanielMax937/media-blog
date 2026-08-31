@@ -11,6 +11,29 @@ import { generateCoverImage } from '../services/CoverImageService';
 import { logApi, logOpenAiRawResponseIfEmpty } from '../services/api-logger';
 import { chatWithFallback, describeOpenAIModel, getFallbackOpenAI, getPrimaryOpenAIModel, FALLBACK_ANTHROPIC_MODEL } from '../llm-fallback';
 
+const DEFAULT_DEMO_OPENAI_TIMEOUT_MS = 5 * 60 * 1000;
+
+function getPositiveIntEnv(name: string, fallback: number): number {
+    const raw = process.env[name]?.trim();
+    if (!raw) return fallback;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function escapeHtml(value: string): string {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function compactText(value: string, maxLength: number): string {
+    const text = value.replace(/\s+/g, ' ').trim();
+    return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}...`;
+}
+
 export class MediumStrategy implements BlogStrategy {
     private openai: OpenAI;
 
@@ -221,6 +244,113 @@ After writing, output the complete HTML content.`,
         return { content: demo, filename };
     }
 
+    private generateFallbackDemo(englishContent: string, reason: string): { content: string; filename: string } {
+        const demosDir = path.join(process.cwd(), 'public', 'demos');
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `demo-${timestamp}.html`;
+        const filepath = path.join(demosDir, filename);
+
+        if (!fs.existsSync(demosDir)) {
+            fs.mkdirSync(demosDir, { recursive: true });
+        }
+
+        const title = escapeHtml(compactText(
+            englishContent.split(/\n+/).map(line => line.trim()).find(Boolean) || 'Interactive JavaScript Demo',
+            90
+        ));
+        const summary = escapeHtml(compactText(englishContent, 280));
+        const demo = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title}</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f6f7f9; color: #18202a; }
+    main { max-width: 920px; margin: 0 auto; padding: 40px 20px 56px; }
+    section { background: #fff; border: 1px solid #d9dde5; border-radius: 8px; padding: 24px; margin-top: 18px; }
+    h1 { font-size: 32px; line-height: 1.15; margin: 0 0 12px; }
+    h2 { font-size: 20px; margin: 0 0 14px; }
+    p { line-height: 1.6; margin: 0; }
+    pre { overflow: auto; background: #101722; color: #d9e6f2; border-radius: 6px; padding: 16px; }
+    code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; }
+    .showcase { display: grid; gap: 12px; margin-top: 14px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; }
+    input { flex: 1 1 260px; min-height: 40px; border: 1px solid #c3cad6; border-radius: 6px; padding: 0 12px; font: inherit; }
+    button { min-height: 40px; border: 0; border-radius: 6px; padding: 0 14px; background: #1769e0; color: #fff; font-weight: 650; cursor: pointer; }
+    button:hover { background: #0f55b6; }
+    .event-card { border: 1px solid #cfe0ff; background: #eef5ff; border-radius: 6px; padding: 14px; }
+    .log { min-height: 90px; border: 1px solid #d8dde7; background: #fbfcfe; border-radius: 6px; padding: 12px; white-space: pre-wrap; }
+    .label { font-size: 12px; font-weight: 700; text-transform: uppercase; color: #566273; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section>
+      <h1>${title}</h1>
+      <p>${summary}</p>
+    </section>
+    <section>
+      <h2>Code: Dispatching a CustomEvent</h2>
+      <pre><code>const event = new CustomEvent('show', {
+  detail: { message: payload, sentAt: new Date().toLocaleTimeString() }
+});
+
+window.dispatchEvent(event);</code></pre>
+      <div class="label">Result</div>
+      <div class="showcase">
+        <div class="controls">
+          <input id="payload" value="Hello from a CustomEvent">
+          <button id="dispatch">Dispatch event</button>
+        </div>
+        <div class="event-card" id="latest">Waiting for an event...</div>
+      </div>
+    </section>
+    <section>
+      <h2>Code: Listening for the Event Payload</h2>
+      <pre><code>window.addEventListener('show', (event) => {
+  render(event.detail.message, event.detail.sentAt);
+});</code></pre>
+      <div class="label">Event log</div>
+      <div class="log" id="event-log">No events yet.</div>
+    </section>
+  </main>
+  <script>
+    const input = document.querySelector('#payload');
+    const latest = document.querySelector('#latest');
+    const log = document.querySelector('#event-log');
+    const history = [];
+
+    document.querySelector('#dispatch').addEventListener('click', () => {
+      const message = input.value.trim() || 'Default CustomEvent payload';
+      const event = new CustomEvent('show', {
+        detail: { message, sentAt: new Date().toLocaleTimeString() }
+      });
+      window.dispatchEvent(event);
+    });
+
+    window.addEventListener('show', (event) => {
+      const detail = event.detail || {};
+      latest.textContent = detail.message + ' | sent at ' + detail.sentAt;
+      history.unshift('[' + detail.sentAt + '] ' + detail.message);
+      log.textContent = history.slice(0, 6).join('\\n');
+    });
+  </script>
+</body>
+</html>`;
+
+        fs.writeFileSync(filepath, demo, 'utf-8');
+        logApi('api', 'MediumStrategy.generateDemo fallback ok', {
+            reason,
+            outputChars: demo.length,
+            filepath,
+        });
+        console.log('Demo saved to:', filepath);
+        console.log('   Accessible at: /demos/' + filename);
+        return { content: demo, filename };
+    }
+
     /**
      * Generate demo HTML with OpenAI and persist it locally.
      * Accepts an optional openaiClient and model override for fallback use.
@@ -243,6 +373,7 @@ After writing, output the complete HTML content.`,
         const client = openaiClient ?? this.openai;
         const demoModel = modelOverride ?? getPrimaryOpenAIModel();
         const demoModelLog = describeOpenAIModel(demoModel);
+        const requestTimeoutMs = getPositiveIntEnv('MEDIUM_DEMO_OPENAI_TIMEOUT_MS', DEFAULT_DEMO_OPENAI_TIMEOUT_MS);
         const systemPrompt = `You are a frontend developer creating an educational demo page. Return only a complete self-contained HTML document.
 
 STRUCTURE REQUIREMENTS:
@@ -273,6 +404,7 @@ TECHNICAL REQUIREMENTS:
         logApi('openai', 'MediumStrategy.generateDemo start', {
             model: demoModelLog,
             inputChars: englishContent.length,
+            timeoutMs: requestTimeoutMs,
         });
         const demoResponse = await chatWithFallback(client, {
             model: demoModel,
@@ -280,6 +412,10 @@ TECHNICAL REQUIREMENTS:
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt },
             ],
+        }, {
+            timeout: requestTimeoutMs,
+            maxRetries: 0,
+            providerFallback: false,
         });
         let demo = demoResponse.choices?.[0]?.message?.content || '';
         logOpenAiRawResponseIfEmpty('MediumStrategy.generateDemo', demo.length, demoResponse);
@@ -290,6 +426,10 @@ TECHNICAL REQUIREMENTS:
         });
 
         demo = demo.replace(/^```html\s*/i, '').replace(/\s*```$/i, '').trim();
+
+        if (!demo) {
+            throw new Error('Medium demo generation returned empty content');
+        }
 
         if (demo) {
             fs.writeFileSync(filepath, demo, 'utf-8');
@@ -309,9 +449,45 @@ TECHNICAL REQUIREMENTS:
         const provider = this.getDemoProvider();
         logApi('api', 'MediumStrategy.generateDemo provider selected', { provider });
         if (provider === 'openai') {
-            return this.generateDemoWithOpenAi(englishContent);
+            try {
+                const result = await this.generateDemoWithOpenAi(englishContent);
+                if (result.content.trim()) {
+                    return result;
+                }
+                logApi('openai', 'MediumStrategy.generateDemo empty; using fallback demo', {
+                    provider,
+                    inputChars: englishContent.length,
+                });
+            } catch (err) {
+                const error = err as Error;
+                logApi('openai', 'MediumStrategy.generateDemo failed; using fallback demo', {
+                    provider,
+                    errName: error?.name ?? 'Error',
+                    message: String(error?.message ?? err).slice(0, 300),
+                    inputChars: englishContent.length,
+                });
+            }
+            return this.generateFallbackDemo(englishContent, 'openai-demo-generation-unavailable');
         }
-        return this.generateDemoWithClaude(englishContent);
+        try {
+            const result = await this.generateDemoWithClaude(englishContent);
+            if (result.content.trim()) {
+                return result;
+            }
+            logApi('claude', 'MediumStrategy.generateDemo empty; using fallback demo', {
+                provider,
+                inputChars: englishContent.length,
+            });
+        } catch (err) {
+            const error = err as Error;
+            logApi('claude', 'MediumStrategy.generateDemo failed; using fallback demo', {
+                provider,
+                errName: error?.name ?? 'Error',
+                message: String(error?.message ?? err).slice(0, 300),
+                inputChars: englishContent.length,
+            });
+        }
+        return this.generateFallbackDemo(englishContent, 'claude-demo-generation-unavailable');
     }
 
     async generate(content: string): Promise<{ content: string; demo?: string }> {

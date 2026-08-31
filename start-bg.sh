@@ -3,6 +3,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+export PATH="/opt/homebrew/bin:/Users/caoxiaopeng/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+export NO_PROXY="${NO_PROXY:-127.0.0.1,localhost}"
+export no_proxy="${no_proxy:-127.0.0.1,localhost}"
+
 PORT="${PORT:-9300}"
 PID_FILE="${BLOG2MEDIA_PID_FILE:-./blog2media.pid}"
 LOG_FILE="${BLOG2MEDIA_LOG_FILE:-./blog2media.log}"

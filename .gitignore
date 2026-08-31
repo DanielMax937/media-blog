@@ -52,3 +52,96 @@ next-env.d.ts
 
 /app/generated/prisma
 *.log
+
+# >>> codex-safe-sync (managed)
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p8
+*.p12
+*.jks
+*.keystore
+*.mobileprovision
+GoogleService-Info.plist
+google-services.json
+Secrets.xcconfig
+Local.xcconfig
+keystore/
+**/keystore/
+
+# Dependencies
+node_modules/
+**/node_modules/
+.venv/
+**/.venv/
+venv/
+**/venv/
+Pods/
+Carthage/Build/
+oh_modules/
+**/oh_modules/
+
+# Build and tool output
+.next/
+**/.next/
+.build/
+**/.build/
+build/
+**/build/
+dist/
+DerivedData*/
+**/DerivedData*/
+*.xcresult
+*.ips
+xcuserdata/
+**/xcuserdata/
+.swiftpm/
+.hvigor/
+**/.hvigor/
+target/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# Python and test caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# Runtime state
+*.log
+*.log.*
+logs/
+**/logs/
+*.pid
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db-wal
+*.db-shm
+tmp/
+**/tmp/
+.cache/
+chrome-profile/
+chrome_data/
+browser-profile/
+browser-profiles/
+local.properties
+/data/
+/output.json
+# <<< codex-safe-sync (managed)

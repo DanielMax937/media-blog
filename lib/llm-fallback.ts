@@ -37,6 +37,12 @@ export function getFallbackOpenAI(): OpenAI {
 
 type NonStreamingParams = OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming;
 export type PrimaryChatParams = Omit<NonStreamingParams, 'model'> & { model?: string };
+export type ChatRequestOptions = {
+    timeout?: number;
+    maxRetries?: number;
+    signal?: AbortSignal | null;
+    providerFallback?: boolean;
+};
 
 export function getPrimaryOpenAIModel(envName = 'OPENAI_MODEL'): string | undefined {
     return process.env[envName]?.trim() || undefined;
@@ -57,17 +63,22 @@ function withOptionalModel(params: PrimaryChatParams): NonStreamingParams {
  */
 export async function chatWithFallback(
     openai: OpenAI,
-    params: PrimaryChatParams
+    params: PrimaryChatParams,
+    requestOptions?: ChatRequestOptions
 ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+    const { providerFallback = true, ...sdkRequestOptions } = requestOptions ?? {};
     try {
-        return await openai.chat.completions.create({ ...withOptionalModel(params), stream: false });
+        return await openai.chat.completions.create({ ...withOptionalModel(params), stream: false }, sdkRequestOptions);
     } catch (primaryErr) {
+        if (!providerFallback) {
+            throw primaryErr;
+        }
         console.warn('[llm-fallback] Primary OpenAI call failed, retrying with OpenAI-compatible fallback:', primaryErr);
         const response = await getFallbackOpenAI().chat.completions.create({
             ...params,
             model: FALLBACK_OPENAI_MODEL,
             stream: false,
-        });
+        }, sdkRequestOptions);
         const content = response.choices?.[0]?.message?.content ?? '';
         logApi('openai', 'llm fallback response', {
             primaryModel: describeOpenAIModel(params.model),

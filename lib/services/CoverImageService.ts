@@ -13,7 +13,7 @@ import { chatWithFallback, describeOpenAIModel, getPrimaryOpenAIModel } from '..
 
 const WEBGEMINI_BASE = process.env.WEBGEMINI_URL ?? 'http://127.0.0.1:8200';
 const POLL_INTERVAL_MS = 5000;
-const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+const POLL_TIMEOUT_MS = 15 * 60 * 1000;
 
 function getSelectedImageBackend() {
     return {

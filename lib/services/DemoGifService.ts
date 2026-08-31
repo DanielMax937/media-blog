@@ -6,6 +6,7 @@ import { spawn } from 'child_process';
 import { chromium } from 'playwright';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from './api-logger';
 import { chatWithFallback, describeOpenAIModel, getPrimaryOpenAIModel } from '../llm-fallback';
+import { getChromiumLaunchOptions } from './PlaywrightBrowser';
 
 // Resolve node_modules bundles using process.cwd() (compatible with both ESM and CJS/Jest)
 const NODE_MODULES = path.join(process.cwd(), 'node_modules');
@@ -178,7 +179,7 @@ export async function recordDemoSession(
     try {
         const rrwebRecordJs = fs.readFileSync(RRWEB_RECORD_BUNDLE, 'utf-8');
 
-        browser = await chromium.launch({ headless: true });
+        browser = await chromium.launch(getChromiumLaunchOptions(true));
         const context = await browser.newContext({ viewport: { width: 800, height: 600 } });
         const page = await context.newPage();
 
@@ -314,7 +315,7 @@ export async function captureReplayFrames(
     const framePaths: string[] = [];
 
     try {
-        browser = await chromium.launch({ headless: true });
+        browser = await chromium.launch(getChromiumLaunchOptions(true));
         const context = await browser.newContext({ viewport: { width: 800, height: 600 } });
         const page = await context.newPage();
 
