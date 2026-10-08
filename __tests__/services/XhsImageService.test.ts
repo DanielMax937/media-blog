@@ -4,19 +4,18 @@ jest.mock('../../lib/services/api-logger', () => ({
     logOpenAiRawResponseIfEmpty: jest.fn(),
 }));
 
-jest.mock('../../lib/services/GoogleImageService', () => ({
-    generateImageWithGoogleAi: jest.fn(),
-    getImageGenerationBackendName: jest.fn(),
-    isGoogleImageGenerationConfigured: jest.fn(),
-    isGoogleImageGenerationEnabled: jest.fn(),
+jest.mock('../../lib/services/CodexImageService', () => ({ generateImageWithCodex: jest.fn(), isCodexImageGenerationAvailable: jest.fn() }));
+jest.mock('../../lib/llm-fallback', () => ({
+    getPrimaryOpenAIModel: jest.fn(() => undefined),
+    describeOpenAIModel: jest.fn(() => '(default)'),
+    chatWithFallback: jest.fn((client: OpenAI, params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming) => client.chat.completions.create({ ...params, stream: false }, {})),
 }));
-
-import { planXhsImages, isWebgeminiAvailable } from '../../lib/services/XhsImageService';
+jest.mock('fs', () => ({ mkdtempSync: jest.fn(() => '/tmp/offline-codex-slides') }));
+import * as fs from 'fs';
+import * as native from '../../lib/services/CodexImageService';
+import { planXhsImages, isImageBackendAvailable, isWebgeminiAvailable, generateXhsImages, XhsImagePlan } from '../../lib/services/XhsImageService';
 import OpenAI from 'openai';
-import * as logger from '../../lib/services/api-logger';
-import * as googleImageService from '../../lib/services/GoogleImageService';
-
-jest.mock('openai');
+jest.mock('openai', () => ({ __esModule: true, default: jest.fn() }));
 
 function makeMockOpenAI(content: string): OpenAI {
     const mockCreate = jest.fn().mockResolvedValue({
@@ -26,17 +25,21 @@ function makeMockOpenAI(content: string): OpenAI {
 }
 
 describe('XhsImageService', () => {
-    const logApi = logger.logApi as jest.Mock;
-    const logApiError = logger.logApiError as jest.Mock;
-    const isEnabled = googleImageService.isGoogleImageGenerationEnabled as jest.Mock;
-    const isConfigured = googleImageService.isGoogleImageGenerationConfigured as jest.Mock;
-    const backendName = googleImageService.getImageGenerationBackendName as jest.Mock;
+    const originalFetch = global.fetch;
+    const originalDirectFlag = process.env.GOOGLE_IMAGE_USE_DIRECT_API;
+    const fetchGuard = jest.fn().mockRejectedValue(new Error('Network is forbidden in this test'));
 
     beforeEach(() => {
-        jest.resetAllMocks();
-        isEnabled.mockReturnValue(false);
-        isConfigured.mockReturnValue(false);
-        backendName.mockReturnValue('webgemini');
+        jest.clearAllMocks();
+        global.fetch = fetchGuard as typeof fetch;
+        (native.isCodexImageGenerationAvailable as jest.Mock).mockReset().mockResolvedValue(true);
+        (native.generateImageWithCodex as jest.Mock).mockReset().mockResolvedValue(undefined);
+    });
+    afterEach(() => {
+        expect(fetchGuard).not.toHaveBeenCalled();
+        global.fetch = originalFetch;
+        if (originalDirectFlag === undefined) delete process.env.GOOGLE_IMAGE_USE_DIRECT_API;
+        else process.env.GOOGLE_IMAGE_USE_DIRECT_API = originalDirectFlag;
     });
 
     describe('planXhsImages', () => {
@@ -155,11 +158,9 @@ describe('XhsImageService', () => {
             expect(mockCreate).toHaveBeenCalledWith(
                 expect.objectContaining({
                     response_format: { type: 'json_object' },
-                })
+                }), {}
             );
-            expect(mockCreate).not.toHaveBeenCalledWith(
-                expect.objectContaining({ model: expect.any(String) })
-            );
+            expect(mockCreate.mock.calls[0][0].model).toBeUndefined();
         });
 
         it('throws when plan JSON is missing required fields (empty images)', async () => {
@@ -186,75 +187,53 @@ describe('XhsImageService', () => {
         });
     });
 
-    describe('isWebgeminiAvailable', () => {
-        it('returns true from env config in direct mode without hitting webgemini health', async () => {
-            isEnabled.mockReturnValue(true);
-            isConfigured.mockReturnValue(true);
-            backendName.mockReturnValue('google-ai');
-            const mockFetch = jest.spyOn(globalThis, 'fetch');
-
-            const available = await isWebgeminiAvailable();
-
-            expect(available).toBe(true);
-            expect(mockFetch).not.toHaveBeenCalled();
-            expect(logApi).toHaveBeenCalledWith('api', 'XhsImage backend selection', {
-                backend: 'google-ai',
-                directEnabled: true,
-                directConfigured: true,
-            });
-            expect(logApi).toHaveBeenCalledWith('genai', 'XhsImage direct backend config result', {
-                backend: 'google-ai',
-                ok: true,
-            });
-            mockFetch.mockRestore();
+    describe('isImageBackendAvailable', () => {
+        it('checks only native Codex even when old Google flag is enabled', async () => {
+            process.env.GOOGLE_IMAGE_USE_DIRECT_API = 'true';
+            expect(await isImageBackendAvailable()).toBe(true);
+            expect(native.isCodexImageGenerationAvailable).toHaveBeenCalledTimes(1);
         });
-
-        it('returns false when direct mode is enabled but config is incomplete', async () => {
-            isEnabled.mockReturnValue(true);
-            isConfigured.mockReturnValue(false);
-            backendName.mockReturnValue('google-ai');
-            const mockFetch = jest.spyOn(globalThis, 'fetch');
-
-            const available = await isWebgeminiAvailable();
-
-            expect(available).toBe(false);
-            expect(mockFetch).not.toHaveBeenCalled();
-            expect(logApi).toHaveBeenCalledWith('api', 'XhsImage backend selection', {
-                backend: 'google-ai',
-                directEnabled: true,
-                directConfigured: false,
-            });
-            expect(logApi).toHaveBeenCalledWith('genai', 'XhsImage direct backend config result', {
-                backend: 'google-ai',
-                ok: false,
-            });
-            mockFetch.mockRestore();
+        it('returns false when CLI is unavailable', async () => {
+            (native.isCodexImageGenerationAvailable as jest.Mock).mockResolvedValue(false);
+            expect(await isImageBackendAvailable()).toBe(false);
         });
+        it('returns false when CLI probe throws', async () => {
+            (native.isCodexImageGenerationAvailable as jest.Mock).mockRejectedValue(new Error('probe failed'));
+            expect(await isImageBackendAvailable()).toBe(false);
+        });
+        it('keeps the old exported name as a Codex-only compatibility alias', async () => {
+            expect(isWebgeminiAvailable).toBe(isImageBackendAvailable);
+            expect(await isWebgeminiAvailable()).toBe(true);
+            expect(native.isCodexImageGenerationAvailable).toHaveBeenCalledTimes(1);
+        });
+    });
 
-        it('checks webgemini health only when direct mode is disabled', async () => {
-            const mockFetch = jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
-
-            const available = await isWebgeminiAvailable();
-
-            expect(available).toBe(false);
-            expect(mockFetch).toHaveBeenCalledTimes(1);
-            expect(logApi).toHaveBeenCalledWith('api', 'XhsImage backend selection', {
-                backend: 'webgemini',
-                directEnabled: false,
-                directConfigured: false,
-            });
-            expect(logApi).toHaveBeenCalledWith(
-                'webgemini',
-                'XhsImage backend health check start',
-                expect.objectContaining({ backend: 'webgemini' })
-            );
-            expect(logApiError).toHaveBeenCalledWith(
-                'webgemini',
-                'XhsImage backend health check failed',
-                expect.any(Error),
-                expect.objectContaining({ backend: 'webgemini' })
-            );
-            mockFetch.mockRestore();
+    describe('generateXhsImages', () => {
+        const plan: XhsImagePlan = { slug: 'offline-topic', images: [{ type: 'cover', prompt: 'cover' }, { type: 'content', prompt: 'content' }, { type: 'ending', prompt: 'ending' }] };
+        it('submits exactly three native images in order at 1024x1365', async () => {
+            expect(await generateXhsImages(plan)).toEqual(['/tmp/offline-codex-slides/01-cover-offline-topic.png', '/tmp/offline-codex-slides/02-content-offline-topic.png', '/tmp/offline-codex-slides/03-ending-offline-topic.png']);
+            expect((native.generateImageWithCodex as jest.Mock).mock.calls.map(([prompt]) => prompt)).toEqual(['cover', 'content', 'ending']);
+            expect((native.generateImageWithCodex as jest.Mock).mock.calls.every(([, , options]) => options.width === 1024 && options.height === 1365)).toBe(true);
+        });
+        it('does not retry a failed or unknown slide and continues preserving partial order', async () => {
+            (native.generateImageWithCodex as jest.Mock).mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('outcome unknown')).mockResolvedValueOnce(undefined);
+            expect(await generateXhsImages(plan)).toEqual(['/tmp/offline-codex-slides/01-cover-offline-topic.png', '/tmp/offline-codex-slides/03-ending-offline-topic.png']);
+            expect((native.generateImageWithCodex as jest.Mock).mock.calls.map(([prompt]) => prompt)).toEqual(['cover', 'content', 'ending']);
+        });
+        it('returns an empty list after three failures without fallback calls', async () => {
+            (native.generateImageWithCodex as jest.Mock).mockRejectedValue(new Error('CLI failed'));
+            expect(await generateXhsImages(plan)).toEqual([]);
+            expect(native.generateImageWithCodex).toHaveBeenCalledTimes(3);
+        });
+        it.each(['../outside', 'nested/path', '/absolute', 'unsafe\\path', '..', ''])('rejects unsafe slug %s before directory or CLI calls', async slug => {
+            await expect(generateXhsImages({ ...plan, slug })).rejects.toThrow('safe filename');
+            expect(fs.mkdtempSync).not.toHaveBeenCalled();
+            expect(native.generateImageWithCodex).not.toHaveBeenCalled();
+        });
+        it('rejects a malformed slide plan before any file or CLI operation', async () => {
+            await expect(generateXhsImages({ ...plan, images: plan.images.slice(0, 2) })).rejects.toThrow('exactly 3');
+            expect(fs.mkdtempSync).not.toHaveBeenCalled();
+            expect(native.generateImageWithCodex).not.toHaveBeenCalled();
         });
     });
 });

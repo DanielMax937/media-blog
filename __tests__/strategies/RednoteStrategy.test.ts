@@ -3,10 +3,16 @@ import * as XhsImageService from '../../lib/services/XhsImageService';
 import * as BitstripeUploader from '../../lib/services/BitstripeUploader';
 import OpenAI from 'openai';
 
-jest.mock('../../lib/services/XhsImageService');
-jest.mock('../../lib/services/BitstripeUploader');
+jest.mock('../../lib/services/XhsImageService', () => ({ isImageBackendAvailable: jest.fn(), isWebgeminiAvailable: jest.fn(), planXhsImages: jest.fn(), generateXhsImages: jest.fn() }));
+jest.mock('../../lib/services/BitstripeUploader', () => ({ uploadToBitstripe: jest.fn() }));
+jest.mock('../../lib/services/api-logger', () => ({ logApi: jest.fn(), logApiError: jest.fn(), logOpenAiRawResponseIfEmpty: jest.fn() }));
+jest.mock('../../lib/llm-fallback', () => ({
+    getPrimaryOpenAIModel: jest.fn(() => undefined),
+    describeOpenAIModel: jest.fn(() => '(default)'),
+    chatWithFallback: jest.fn((client: OpenAI, params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming) => client.chat.completions.create({ ...params, stream: false }, {})),
+}));
 
-const mockIsWebgeminiAvailable = XhsImageService.isWebgeminiAvailable as jest.Mock;
+const mockIsNativeAvailable = XhsImageService.isImageBackendAvailable as jest.Mock;
 const mockPlanXhsImages = XhsImageService.planXhsImages as jest.Mock;
 const mockGenerateXhsImages = XhsImageService.generateXhsImages as jest.Mock;
 const mockUploadToBitstripe = BitstripeUploader.uploadToBitstripe as jest.Mock;
@@ -19,10 +25,20 @@ function makeOpenAI(markdownContent: string): OpenAI {
 }
 
 describe('RednoteStrategy', () => {
-    afterEach(() => jest.resetAllMocks());
+    const originalFetch = global.fetch;
+    const fetchGuard = jest.fn().mockRejectedValue(new Error('Network is forbidden in this test'));
+    beforeEach(() => {
+        jest.clearAllMocks();
+        for (const mock of [mockIsNativeAvailable, mockPlanXhsImages, mockGenerateXhsImages, mockUploadToBitstripe]) mock.mockReset();
+        global.fetch = fetchGuard as typeof fetch;
+    });
+    afterEach(() => {
+        expect(fetchGuard).not.toHaveBeenCalled();
+        global.fetch = originalFetch;
+    });
 
     it('returns markdown content', async () => {
-        mockIsWebgeminiAvailable.mockResolvedValue(true);
+        mockIsNativeAvailable.mockResolvedValue(true);
         mockPlanXhsImages.mockResolvedValue({
             slug: 'test',
             images: [
@@ -45,8 +61,8 @@ describe('RednoteStrategy', () => {
         expect(result.content).toBe('# 测试文案\n\n内容');
     });
 
-    it('returns text-only markdown when webgemini is unavailable (like Medium without cover)', async () => {
-        mockIsWebgeminiAvailable.mockResolvedValue(false);
+    it('returns text-only markdown when native Codex is unavailable (like Medium without cover)', async () => {
+        mockIsNativeAvailable.mockResolvedValue(false);
         const openai = makeOpenAI('# 文章');
         const strategy = new RednoteStrategy(openai);
 
@@ -56,8 +72,8 @@ describe('RednoteStrategy', () => {
         expect(result.imageUrls).toEqual([]);
     });
 
-    it('generates images and uploads when webgemini is available', async () => {
-        mockIsWebgeminiAvailable.mockResolvedValue(true);
+    it('generates native images and uses the existing mocked upload pipeline', async () => {
+        mockIsNativeAvailable.mockResolvedValue(true);
         mockPlanXhsImages.mockResolvedValue({
             slug: 'test-slug',
             images: [
@@ -90,7 +106,7 @@ describe('RednoteStrategy', () => {
     });
 
     it('does NOT embed imageUrls in markdown content', async () => {
-        mockIsWebgeminiAvailable.mockResolvedValue(true);
+        mockIsNativeAvailable.mockResolvedValue(true);
         mockPlanXhsImages.mockResolvedValue({
             slug: 'topic',
             images: [
@@ -116,7 +132,7 @@ describe('RednoteStrategy', () => {
     });
 
     it('returns partial imageUrls when generation returns fewer slides than planned', async () => {
-        mockIsWebgeminiAvailable.mockResolvedValue(true);
+        mockIsNativeAvailable.mockResolvedValue(true);
         mockPlanXhsImages.mockResolvedValue({
             slug: 'partial-gen',
             images: [
@@ -142,7 +158,7 @@ describe('RednoteStrategy', () => {
     });
 
     it('returns partial imageUrls when some (but not all) uploads fail', async () => {
-        mockIsWebgeminiAvailable.mockResolvedValue(true);
+        mockIsNativeAvailable.mockResolvedValue(true);
         mockPlanXhsImages.mockResolvedValue({
             slug: 'partial',
             images: [
@@ -169,7 +185,7 @@ describe('RednoteStrategy', () => {
     });
 
     it('returns text-only markdown when ALL image uploads fail', async () => {
-        mockIsWebgeminiAvailable.mockResolvedValue(true);
+        mockIsNativeAvailable.mockResolvedValue(true);
         mockPlanXhsImages.mockResolvedValue({
             slug: 'fail-all',
             images: [
@@ -191,7 +207,7 @@ describe('RednoteStrategy', () => {
     });
 
     it('returns text-only markdown when image plan fails (e.g. OpenAI rate limit)', async () => {
-        mockIsWebgeminiAvailable.mockResolvedValue(true);
+        mockIsNativeAvailable.mockResolvedValue(true);
         mockPlanXhsImages.mockRejectedValue(new Error('OpenAI rate limit'));
 
         const openai = makeOpenAI('# 文章');

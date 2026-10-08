@@ -1,25 +1,11 @@
 import OpenAI from 'openai';
-import fs from 'fs';
 import path from 'path';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from './api-logger';
-import { withWebgeminiConcurrency } from './webgemini-concurrency';
-import {
-    generateImageWithGoogleAi,
-    getImageGenerationBackendName,
-    isGoogleImageGenerationConfigured,
-    isGoogleImageGenerationEnabled,
-} from './GoogleImageService';
+import { generateImageWithCodex, isCodexImageGenerationAvailable } from './CodexImageService';
 import { chatWithFallback, describeOpenAIModel, getPrimaryOpenAIModel } from '../llm-fallback';
-
-const WEBGEMINI_BASE = process.env.WEBGEMINI_URL ?? 'http://127.0.0.1:8200';
-const POLL_INTERVAL_MS = 5000;
-const POLL_TIMEOUT_MS = 15 * 60 * 1000;
-
 function getSelectedImageBackend() {
     return {
-        backend: getImageGenerationBackendName(),
-        directEnabled: isGoogleImageGenerationEnabled(),
-        directConfigured: isGoogleImageGenerationConfigured(),
+        backend: 'codex-cli',
     };
 }
 
@@ -67,116 +53,31 @@ Include "16:9 aspect ratio, high resolution, professional blog cover, digital il
 }
 
 /**
- * Submits a cover image generation job to the webgemini service and polls until done.
- * Returns the local PNG path, or null on failure/timeout.
+ * Calls native Codex CLI once. Unknown outcomes must not be resubmitted.
  */
-async function generateCoverFromWebgemini(prompt: string, outPath: string): Promise<boolean> {
-    if (isGoogleImageGenerationEnabled()) {
-        logApi('genai', 'CoverImage generate submit', {
-            backend: 'google-ai',
-            outFile: path.basename(outPath),
-            promptChars: prompt.length,
-        });
-        await generateImageWithGoogleAi(prompt, outPath, {
-            width: 1536,
-            height: 1024,
-        });
-        logApi('genai', 'CoverImage generate completed', {
-            backend: 'google-ai',
-            outFile: path.basename(outPath),
-        });
-        return true;
-    }
-
-    return withWebgeminiConcurrency(async () => {
-        const formData = new FormData();
-        formData.append('prompt', prompt);
-
-        const t0 = Date.now();
-        logApi('webgemini', 'CoverImage POST /image submit', {
-            base: WEBGEMINI_BASE,
-            promptChars: prompt.length,
-            outFile: path.basename(outPath),
-        });
-        const submitRes = await fetch(`${WEBGEMINI_BASE}/image`, {
-            method: 'POST',
-            body: formData,
-        });
-        if (!submitRes.ok) {
-            const body = await submitRes.text();
-            logApi('webgemini', 'CoverImage POST /image failed', { status: submitRes.status, bodySnippet: body.slice(0, 200) });
-            throw new Error(`webgemini cover submit failed: ${submitRes.status} ${body}`);
-        }
-        const { job_id: jobId } = (await submitRes.json()) as { job_id: string };
-        logApi('webgemini', 'CoverImage POST /image queued', { jobId, durationMs: Date.now() - t0 });
-
-        const deadline = Date.now() + POLL_TIMEOUT_MS;
-        let polls = 0;
-        while (Date.now() < deadline) {
-            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-            polls += 1;
-            const pollRes = await fetch(`${WEBGEMINI_BASE}/image/${jobId}`);
-            if (!pollRes.ok) {
-                console.warn(`[CoverImageService] poll non-ok ${pollRes.status} for job ${jobId}`);
-                continue;
-            }
-            const result = (await pollRes.json()) as {
-                status: string;
-                images?: Array<{ local_path: string }>;
-            };
-            if (result.status === 'completed' && result.images?.length) {
-                fs.copyFileSync(result.images[0].local_path, outPath);
-                logApi('webgemini', 'CoverImage GET /image/{jobId} completed', {
-                    jobId,
-                    polls,
-                    durationMs: Date.now() - t0,
-                });
-                return true;
-            }
-            if (result.status === 'failed') {
-                logApi('webgemini', 'CoverImage job failed', { jobId, polls });
-                throw new Error(`webgemini cover job ${jobId} failed`);
-            }
-        }
-        logApi('webgemini', 'CoverImage poll timeout', { jobId, polls, durationMs: Date.now() - t0 });
-        throw new Error(`webgemini cover job ${jobId} timed out`);
+async function generateCoverFromCodex(prompt: string, outPath: string): Promise<void> {
+    logApi('api', 'CoverImage generate submit', {
+        backend: 'codex-cli', outFile: path.basename(outPath), promptChars: prompt.length,
+    });
+    await generateImageWithCodex(prompt, outPath, { width: 1536, height: 864 });
+    logApi('api', 'CoverImage generate completed', {
+        backend: 'codex-cli', outFile: path.basename(outPath),
     });
 }
 
 /**
- * Checks whether the currently selected image backend is available.
- * Direct Google AI mode is decided only by env vars, never by webgemini health.
+ * Checks only native Codex CLI availability; no alternate image backend.
  */
-async function isWebgeminiAvailable(): Promise<boolean> {
+async function isImageBackendAvailable(): Promise<boolean> {
     const selection = getSelectedImageBackend();
     logApi('api', 'CoverImage backend selection', selection);
 
-    if (selection.directEnabled) {
-        const ok = selection.directConfigured;
-        logApi('genai', 'CoverImage direct backend config result', {
-            backend: selection.backend,
-            ok,
-        });
-        return ok;
-    }
-
     try {
-        logApi('webgemini', 'CoverImage backend health check start', {
-            backend: selection.backend,
-            base: WEBGEMINI_BASE,
-        });
-        const res = await fetch(`${WEBGEMINI_BASE}/health`, { signal: AbortSignal.timeout(3000) });
-        logApi('webgemini', 'CoverImage backend health check result', {
-            backend: selection.backend,
-            ok: res.ok,
-            status: res.status,
-        });
-        return res.ok;
-    } catch (err) {
-        logApiError('webgemini', 'CoverImage backend health check failed', err, {
-            backend: selection.backend,
-            base: WEBGEMINI_BASE,
-        });
+        const ok = await isCodexImageGenerationAvailable();
+        logApi('api', 'CoverImage native CLI availability result', { ...selection, ok });
+        return ok;
+    } catch (error) {
+        logApiError('api', 'CoverImage native CLI availability failed', error, selection);
         return false;
     }
 }
@@ -194,7 +95,7 @@ export async function generateCoverImage(
     openai: OpenAI,
     outputDir: string
 ): Promise<string | null> {
-    const backendAvailable = await isWebgeminiAvailable();
+    const backendAvailable = await isImageBackendAvailable();
     const selection = getSelectedImageBackend();
     if (!backendAvailable) {
         logApi('api', 'CoverImage backend unavailable, skipping generation', selection);
@@ -202,24 +103,16 @@ export async function generateCoverImage(
         return null;
     }
 
-    let attempts = 0;
     const outPath = path.join(outputDir, `cover-${Date.now()}.png`);
-
-    while (attempts < 2) {
-        try {
-            const prompt = await generateCoverPrompt(markdown, openai);
-            console.log('[CoverImageService] Generating cover with prompt:', prompt.substring(0, 80) + '...');
-            await generateCoverFromWebgemini(prompt, outPath);
-            console.log('[CoverImageService] ✓ Cover image generated:', path.basename(outPath));
-            return outPath;
-        } catch (err) {
-            attempts++;
-            if (attempts >= 2) {
-                console.error('[CoverImageService] Cover generation failed after retry:', err);
-                return null;
-            }
-            console.warn('[CoverImageService] Retry cover generation...');
-        }
+    try {
+        const prompt = await generateCoverPrompt(markdown, openai);
+        await generateCoverFromCodex(prompt, outPath);
+        console.log('[CoverImageService] ✓ Cover image generated:', path.basename(outPath));
+        return outPath;
+    } catch (error) {
+        logApiError('api', 'CoverImage generation failed; not resubmitted', error, {
+            backend: 'codex-cli', outFile: path.basename(outPath),
+        });
+        return null;
     }
-    return null;
 }

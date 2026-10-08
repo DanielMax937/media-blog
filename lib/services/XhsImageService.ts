@@ -3,24 +3,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from './api-logger';
-import { withWebgeminiConcurrency } from './webgemini-concurrency';
-import {
-    generateImageWithGoogleAi,
-    getImageGenerationBackendName,
-    isGoogleImageGenerationConfigured,
-    isGoogleImageGenerationEnabled,
-} from './GoogleImageService';
+import { generateImageWithCodex, isCodexImageGenerationAvailable } from './CodexImageService';
 import { chatWithFallback, describeOpenAIModel, getPrimaryOpenAIModel } from '../llm-fallback';
 
-const WEBGEMINI_BASE = process.env.WEBGEMINI_URL ?? 'http://127.0.0.1:8200';
-const POLL_INTERVAL_MS = 5000;
-const POLL_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes — long jobs / slow polls
 
 function getSelectedImageBackend() {
     return {
-        backend: getImageGenerationBackendName(),
-        directEnabled: isGoogleImageGenerationEnabled(),
-        directConfigured: isGoogleImageGenerationConfigured(),
+        backend: 'codex-cli',
     };
 }
 
@@ -175,123 +164,51 @@ Rules:
 }
 
 /**
- * Submits an image generation job to the local webgemini service and polls
- * until the image is ready. Returns the absolute local path of the PNG.
- * (webgemini accepts prompt-only multipart — reference images optional.)
+ * Calls native Codex CLI once and saves a local PNG. No image backend fallback.
  */
 async function generateImage(prompt: string, outPath: string): Promise<void> {
-    if (isGoogleImageGenerationEnabled()) {
-        logApi('genai', 'XhsImage generate submit', {
-            backend: 'google-ai',
-            outFile: path.basename(outPath),
-            promptChars: prompt.length,
-        });
-        await generateImageWithGoogleAi(prompt, outPath, {
-            width: 1024,
-            height: 1365,
-        });
-        logApi('genai', 'XhsImage generate completed', {
-            backend: 'google-ai',
-            outFile: path.basename(outPath),
-        });
-        return;
-    }
-
-    await withWebgeminiConcurrency(async () => {
-        const formData = new FormData();
-        formData.append('prompt', prompt);
-
-        const t0 = Date.now();
-        logApi('webgemini', 'POST /image submit', {
-            base: WEBGEMINI_BASE,
-            promptChars: prompt.length,
-            outFile: path.basename(outPath),
-        });
-        const submitRes = await fetch(`${WEBGEMINI_BASE}/image`, {
-            method: 'POST',
-            body: formData,
-        });
-        if (!submitRes.ok) {
-            const body = await submitRes.text();
-            logApi('webgemini', 'POST /image submit failed', { status: submitRes.status, bodySnippet: body.slice(0, 200) });
-            throw new Error(`webgemini submit failed: ${submitRes.status} ${body}`);
-        }
-        const { job_id: jobId } = (await submitRes.json()) as { job_id: string };
-        logApi('webgemini', 'POST /image queued', { jobId, durationMs: Date.now() - t0 });
-
-        const deadline = Date.now() + POLL_TIMEOUT_MS;
-        let polls = 0;
-        while (Date.now() < deadline) {
-            await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
-            polls += 1;
-            const pollRes = await fetch(`${WEBGEMINI_BASE}/image/${jobId}`);
-            if (!pollRes.ok) continue;
-            const result = (await pollRes.json()) as { status: string; images?: Array<{ local_path: string }> };
-            if (result.status === 'completed' && result.images?.length) {
-                fs.copyFileSync(result.images[0].local_path, outPath);
-                logApi('webgemini', 'GET /image/{jobId} completed', {
-                    jobId,
-                    polls,
-                    durationMs: Date.now() - t0,
-                    outFile: path.basename(outPath),
-                });
-                return;
-            }
-            if (result.status === 'failed') {
-                logApi('webgemini', 'GET /image/{jobId} job failed', { jobId, polls });
-                throw new Error(`webgemini job ${jobId} failed`);
-            }
-        }
-        logApi('webgemini', 'GET /image/{jobId} poll timeout', { jobId, polls, durationMs: Date.now() - t0 });
-        throw new Error(`webgemini job ${jobId} timed out`);
+    logApi('api', 'XhsImage generate submit', {
+        backend: 'codex-cli', outFile: path.basename(outPath), promptChars: prompt.length,
+    });
+    await generateImageWithCodex(prompt, outPath, { width: 1024, height: 1365 });
+    logApi('api', 'XhsImage generate completed', {
+        backend: 'codex-cli', outFile: path.basename(outPath),
     });
 }
 
 /**
- * Checks whether the currently selected image backend is available.
- * Direct Google AI mode is decided only by env vars, never by webgemini health.
+ * Checks only native Codex CLI availability; no alternate image backend.
  */
-export async function isWebgeminiAvailable(): Promise<boolean> {
+export async function isImageBackendAvailable(): Promise<boolean> {
     const selection = getSelectedImageBackend();
     logApi('api', 'XhsImage backend selection', selection);
 
-    if (selection.directEnabled) {
-        const ok = selection.directConfigured;
-        logApi('genai', 'XhsImage direct backend config result', {
-            backend: selection.backend,
-            ok,
-        });
-        return ok;
-    }
-
     try {
-        logApi('webgemini', 'XhsImage backend health check start', {
-            backend: selection.backend,
-            base: WEBGEMINI_BASE,
-        });
-        const res = await fetch(`${WEBGEMINI_BASE}/health`, { signal: AbortSignal.timeout(3000) });
-        logApi('webgemini', 'XhsImage backend health check result', {
-            backend: selection.backend,
-            ok: res.ok,
-            status: res.status,
-        });
-        return res.ok;
-    } catch (err) {
-        logApiError('webgemini', 'XhsImage backend health check failed', err, {
-            backend: selection.backend,
-            base: WEBGEMINI_BASE,
-        });
+        const ok = await isCodexImageGenerationAvailable();
+        logApi('api', 'XhsImage native CLI availability result', { ...selection, ok });
+        return ok;
+    } catch (error) {
+        logApiError('api', 'XhsImage native CLI availability failed', error, selection);
         return false;
     }
 }
 
+/** @deprecated Compatibility name only; this checks native Codex CLI. */
+export const isWebgeminiAvailable = isImageBackendAvailable;
+
 /**
  * Generates XHS slides one at a time (cover → content → ending).
- * Each slide uses up to two attempts; a failed slide is skipped so later slides still run.
+ * Each slide is submitted once; failure/unknown outcomes are never resubmitted.
+ * A failed slide is skipped so later slides still run.
  * Returns local file paths only for slides that succeeded (order preserved among successes).
- * Concurrency for webgemini is still capped per {@link withWebgeminiConcurrency} inside {@link generateImage}.
+ * Native CLI execution is sequential across the three slides.
  */
 export async function generateXhsImages(plan: XhsImagePlan): Promise<string[]> {
+    validatePlan(plan);
+    // The LLM-provided slug enters both a directory prefix and filenames.
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(plan.slug)) {
+        throw new SyntaxError('XhsImagePlan slug is not a safe filename component');
+    }
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `blog2media-xhs-${plan.slug}-`));
     const paths: string[] = [];
 
@@ -300,31 +217,14 @@ export async function generateXhsImages(plan: XhsImagePlan): Promise<string[]> {
         const nn = String(i + 1).padStart(2, '0');
         const outFile = path.join(tmpDir, `${nn}-${type}-${plan.slug}.png`);
         const base = path.basename(outFile);
-        let saved: string | null = null;
-
-        for (let attempt = 1; attempt <= 2; attempt++) {
-            try {
-                await generateImage(prompt, outFile);
-                console.log(`[XhsImageService] ✓ ${base}`);
-                saved = outFile;
-                break;
-            } catch (err) {
-                if (attempt < 2) {
-                    console.warn(`[XhsImageService] Retry ${attempt} for ${base}`);
-                } else {
-                    console.error(`[XhsImageService] ✗ ${base} failed after retry:`, err);
-                    logApiError('webgemini', 'XhsImageService slide failed after retries', err, {
-                        slug: plan.slug,
-                        slideIndex: i,
-                        type,
-                        outFile: base,
-                    });
-                }
-            }
-        }
-
-        if (saved) {
-            paths.push(saved);
+        try {
+            await generateImage(prompt, outFile);
+            console.log(`[XhsImageService] ✓ ${base}`);
+            paths.push(outFile);
+        } catch (error) {
+            logApiError('api', 'XhsImage slide failed; not resubmitted', error, {
+                backend: 'codex-cli', slug: plan.slug, slideIndex: i, type, outFile: base,
+            });
         }
     }
 

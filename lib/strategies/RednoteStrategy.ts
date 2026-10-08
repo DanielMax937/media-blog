@@ -1,9 +1,8 @@
 import { BlogStrategy } from './BlogStrategy';
 import OpenAI from 'openai';
-import { isWebgeminiAvailable, planXhsImages, generateXhsImages } from '../services/XhsImageService';
+import { isImageBackendAvailable, planXhsImages, generateXhsImages } from '../services/XhsImageService';
 import { uploadToBitstripe } from '../services/BitstripeUploader';
 import { logApi, logApiError, logOpenAiRawResponseIfEmpty } from '../services/api-logger';
-import { getImageGenerationBackendName } from '../services/GoogleImageService';
 import { chatWithFallback, describeOpenAIModel, getPrimaryOpenAIModel } from '../llm-fallback';
 
 export class RednoteStrategy implements BlogStrategy {
@@ -61,7 +60,7 @@ export class RednoteStrategy implements BlogStrategy {
             throw err;
         }
 
-        // Step 2: XHS images (webgemini / uploads) — best-effort: slides generate sequentially;
+        // Step 2: native Codex CLI images / uploads — best-effort, sequential slides;
         // each successful file is uploaded separately so partial success still fills imageUrls.
         let imageUrls: string[] = [];
         try {
@@ -69,7 +68,7 @@ export class RednoteStrategy implements BlogStrategy {
         } catch (err) {
             logApiError(
                 'api',
-                'RednoteStrategy: XHS / webgemini pipeline failed; continuing with text-only markdown',
+                'RednoteStrategy: XHS / native Codex pipeline failed; continuing with text-only markdown',
                 err,
                 { markdownChars: markdown.length },
             );
@@ -79,12 +78,12 @@ export class RednoteStrategy implements BlogStrategy {
     }
 
     private async generateAndUploadImages(markdown: string): Promise<string[]> {
-        const backend = getImageGenerationBackendName();
-        logApi(backend === 'google-ai' ? 'genai' : 'webgemini', 'RednoteStrategy.image backend availability check', {
+        const backend = 'codex-cli';
+        logApi('api', 'RednoteStrategy.image backend availability check', {
             backend,
         });
-        const available = await isWebgeminiAvailable();
-        logApi(backend === 'google-ai' ? 'genai' : 'webgemini', 'RednoteStrategy.image backend availability result', {
+        const available = await isImageBackendAvailable();
+        logApi('api', 'RednoteStrategy.image backend availability result', {
             backend,
             ok: available,
         });
@@ -101,7 +100,7 @@ export class RednoteStrategy implements BlogStrategy {
 
         const tGen = Date.now();
         const localPaths = await generateXhsImages(plan);
-        logApi(backend === 'google-ai' ? 'genai' : 'webgemini', 'RednoteStrategy.generateXhsImages done', {
+        logApi('api', 'RednoteStrategy.generateXhsImages done', {
             durationMs: Date.now() - tGen,
             fileCount: localPaths.length,
             expectedSlides: plan.images.length,
